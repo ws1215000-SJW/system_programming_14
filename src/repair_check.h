@@ -51,6 +51,12 @@ void repair_verify(const char *root, int event, int equip_state, repair_result_t
  */
 const char *repair_live_sensor(int fac);
 
+/*
+ * 냉각수 목표 유량 (cooling/coolant_config.cfg 의 target_flow, 0..100).
+ * 파일이나 키가 없으면 정상값 70. 냉각실의 유량 수치가 이 값을 따라간다.
+ */
+double repair_coolant_flow(const char *root);
+
 /* 설비 프로세스를 띄우기 전에 필요한 조건. 못 띄우면 0 이고 why 에 사유를 쓴다. */
 int repair_equip_startable(const char *root, int fac, char *why, size_t n);
 

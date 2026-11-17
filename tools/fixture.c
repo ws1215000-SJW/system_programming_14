@@ -127,10 +127,10 @@ int fixture_create(const char *root)
     bad |= relink(root, "generator/temperature_sensor_link", "temp_sensor_b.dat");
 
     /* 냉각실 */
-    bad |= put_file(root, "cooling/coolant_config.cfg",
-                    "# 냉각수 공급 설정\npump_id=CP-2\nflow_rate=120\n", 0644);
-    bad |= put_file(root, "cooling/coolant_level.txt", "flow=120\nlevel=85\n", 0644);
-    bad |= put_file(root, "cooling/pump_label.txt", "model=CP-2 Mk3\ndevice_id=CP-2-0417\n", 0644);
+    /* 아래 세 파일은 저장소의 plant/cooling/ 과 같은 내용 */
+    bad |= put_file(root, "cooling/coolant_config.cfg", "target_flow=70\n", 0644);
+    bad |= put_file(root, "cooling/coolant_level.txt", "current_flow=70\n", 0644);
+    bad |= put_file(root, "cooling/pump_label.txt", "pump_id=PUMP-B\n", 0644);
     bad |= put_file(root, "cooling/pump_status.txt", "pid=\nstate=\n", 0644);
     bad |= put_file(root, "cooling/cooling_sensor_a.dat", "sensor_id=CS-A\nvalue=18.4\n", 0644);
     bad |= put_file(root, "cooling/cooling_sensor_b.dat", "sensor_id=CS-B\nvalue=32.0\n", 0644);
@@ -153,7 +153,9 @@ int fixture_break(const char *root, int event)
     switch (event) {
     case EV_G01: return relink(root, "generator/temperature_sensor_link", "temp_sensor_x.dat");
     case EV_G03: return set_mode(root, "generator/generator_config.cfg", 0000);
-    case EV_C01: return set_kv(root, "cooling/coolant_config.cfg", "flow_rate", "45");
+    case EV_C01:                /* 호스트의 start_c01 과 같은 값 */
+        return set_kv(root, "cooling/coolant_config.cfg", "target_flow", "40") |
+               set_kv(root, "cooling/coolant_level.txt", "current_flow", "40");
     case EV_C03: return relink(root, "cooling/cooling_sensor_link", "cooling_sensor_a.dat");
     case EV_P01:
         return set_kv(root, "power/power_config.cfg", "circuit_a_load", "118") |
@@ -171,7 +173,9 @@ int fixture_fix(const char *root, int event)
     switch (event) {
     case EV_G01: return relink(root, "generator/temperature_sensor_link", "temp_sensor_b.dat");
     case EV_G03: return set_mode(root, "generator/generator_config.cfg", 0640);
-    case EV_C01: return set_kv(root, "cooling/coolant_config.cfg", "flow_rate", "120");
+    case EV_C01:
+        return set_kv(root, "cooling/coolant_config.cfg", "target_flow", "70") |
+               set_kv(root, "cooling/coolant_level.txt", "current_flow", "70");
     case EV_C03: return relink(root, "cooling/cooling_sensor_link", "cooling_sensor_b.dat");
     case EV_P01:
         return set_kv(root, "power/power_config.cfg", "circuit_a_load", "65") |

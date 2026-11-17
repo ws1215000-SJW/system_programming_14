@@ -57,14 +57,15 @@ make test               # ncurses 없이 도는 테스트
 | G01 | | `generator/temperature_sensor_link` 를 잘못된 대상으로 | 링크가 `temp_sensor_b.dat` 를 가리키고 읽힌다 |
 | G02 | 터빈 제어 정지 또는 종료 | | 터빈 제어 프로세스 가동 |
 | G03 | 터빈 제어 종료 | `generator/generator_config.cfg` 권한 | 권한이 `0640`, 터빈 제어 프로세스 가동 |
-| C01 | | `cooling/coolant_config.cfg` 의 `flow_rate` | `flow_rate` 가 110~130 |
+| C01 | | `cooling/coolant_config.cfg` 의 `target_flow` | `target_flow` 가 70 |
 | C02 | 냉각 펌프 정지 또는 종료 | | 냉각 펌프 프로세스 가동 |
 | C03 | | `cooling/cooling_sensor_link` 를 옛 센서로 | 링크가 `cooling_sensor_b.dat` 를 가리키고 수정 시각이 5초 이내 |
 | P01 | | `power/power_config.cfg` 의 `circuit_a_load`, `circuit_b_load` | 둘 다 80 이하, 합 130 |
 | P02 | 차단기 제어 정지 | `power_config.cfg` 의 `fault_isolated` | `fault_isolated=1`, 차단기 제어 프로세스 가동 |
 | P03 | | `power_config.cfg` 의 `supply_generator`, `supply_cooling` | 40 과 60, 합 100 |
 
-- 키 이름과 정답 값은 현장 파일 내용이 정해지기 전에 임시로 잡은 것이다. 현장 파일에 맞춰 `src/repair_check.c` 맨 위의 표와 `tools/fixture.c` 를 고치면 된다.
+- C01 은 저장소의 `plant/cooling/` 파일과 `src/worker.c` 의 값(정상 70, 고장 40)에 맞췄다. 나머지 이벤트의 키 이름과 정답 값은 현장 파일이 정해지기 전에 임시로 잡은 것이다. 현장 파일에 맞춰 `src/repair_check.c` 맨 위의 표와 `tools/fixture.c` 를 고치면 된다.
+- 냉각실의 유량 수치는 `coolant_config.cfg` 의 `target_flow` 를 따라간다. 직원이 `repair coolant_flow <값>` 으로 바꾸면 관제사 화면의 유량·온도·효율이 같이 움직인다.
 - `generator_config.cfg` 에 소유자 읽기 권한이 없으면 터빈 제어 프로세스 재실행이 거부된다. G03 에서는 권한을 먼저 고쳐야 한다.
 - 링크는 상대 경로든 절대 경로든 같은 파일을 가리키면 통과한다.
 
@@ -115,6 +116,19 @@ fac_mgr_shutdown(&m);
 - 연계 고장은 `fac_mgr_link(&m, 영향받는_시설, 0..10)` 으로 그 시설의 수치를 나쁘게 만든다.
 - 발전실 이벤트는 호스트가 냉각실·배전실 복구를 확인한 뒤 `fac_mgr_arm(&m, FAC_GENERATOR, EV_G03, ...)` 으로 시작한다. 백 타임 0 이면 바로 터진다.
 - 실제로 돌아가는 예는 `tools/demo.c` 와 `tests/test_facility.c` 에 있다.
+
+### `src/worker.c` 에서 바꿀 곳
+
+지금 `worker.c` 는 시설 프로세스가 없어서 테스트 타이머와 `c01_active` 변수로 돈다. 붙일 때는 이렇게 바뀐다.
+
+| 지금 | 붙인 뒤 |
+|---|---|
+| `backtime_end` 타이머로 C01 발생 | `fac_mgr_arm(&m, FAC_COOLING, EV_C01, ...)` 뒤 `FMSG_EVENT` 를 받으면 `start_c01()` |
+| `flow == C01_NORMAL_FLOW` 로 해소 판정 | `repair` 뒤 `fac_mgr_request_verify()`, `FMSG_VERIFY` 의 `verify_ok` 로 판정 |
+| `select()` 에 표준 입력만 | 보고 파이프 세 개(`fac_mgr_fd`)를 함께 |
+| `printf` / `fgets` | `ui_print` / `ui_handle_input` |
+
+`save_value()` 는 파일을 한 줄로 덮어쓴다. 설정 파일에 키가 여러 개 생기면 (`power_config.cfg`) 다른 줄이 지워지므로 그때는 `kv_set()` 을 쓰면 된다.
 
 ## 화면
 

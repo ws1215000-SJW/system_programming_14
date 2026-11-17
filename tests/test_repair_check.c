@@ -131,6 +131,23 @@ static void test_equip(void)
     CHECK(verify(EV_C01, EQ_DEAD).ok == 1);
 }
 
+/* 저장소에 올라온 실제 현장 파일로도 C01 확인이 맞게 도는지 본다 */
+static void test_repo_plant(void)
+{
+    repair_result_t r;
+
+    SECTION("저장소의 plant/ 파일");
+    if (access("plant/cooling/coolant_config.cfg", R_OK) != 0) {
+        printf("  (plant/ 가 없어 건너뜀)\n");
+        return;
+    }
+    repair_verify("plant", EV_C01, EQ_RUNNING, &r);
+    CHECK(r.ok == 1);
+    CHECK(repair_coolant_flow("plant") == 70.0);
+    CHECK(repair_coolant_flow(root) == 70.0);
+    CHECK(repair_coolant_flow("/nonexistent") == 70.0);
+}
+
 static void test_link_forms(void)
 {
     const char *link = P("generator/temperature_sensor_link");
@@ -228,6 +245,7 @@ int main(void)
     test_healthy();
     test_break_fix();
     test_equip();
+    test_repo_plant();
     test_link_forms();
     test_fresh();
     test_values();

@@ -275,6 +275,16 @@ static void test_verify_file_event(void)
 
     v = verify(FAC_COOLING);                            /* 이벤트가 없을 때의 확인 요청 */
     CHECK(v.verify_ok == 0 && v.verify_failed == CHK_NO_EVENT && v.repairs == 1);
+
+    /* 유량 수치는 설정 파일의 target_flow 를 따라간다 (repair coolant_flow <값>) */
+    CHECK(kv_set(P("cooling/coolant_config.cfg"), "target_flow", "55") == 0);
+    sleep_ms(2500);
+    CHECK(fresh_status(FAC_COOLING, &s));
+    CHECK(s.metrics[2] > 52.f && s.metrics[2] < 58.f && metric_level(FAC_COOLING, 2, s.metrics[2]) == 1);
+    CHECK(kv_set(P("cooling/coolant_config.cfg"), "target_flow", "70") == 0);
+    sleep_ms(2500);
+    CHECK(fresh_status(FAC_COOLING, &s));
+    CHECK(s.metrics[2] > 67.f && s.metrics[2] < 73.f);
 }
 
 static void test_pause_resume(void)

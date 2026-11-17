@@ -28,6 +28,10 @@
 
 #define GEN_CFG_MODE 0640
 
+/* 냉각수 목표 유량: plant/cooling/coolant_config.cfg 의 target_flow (호스트의 repair coolant_flow 가 쓴다) */
+#define COOL_FLOW_KEY    "target_flow"
+#define COOL_FLOW_NORMAL 70
+
 static const repair_check_t CHK_G01[] = {
     { CHK_LINK,     GEN_LINK, GEN_LIVE, NULL, NULL, 0, 0 },
     { CHK_READABLE, GEN_LINK, NULL, NULL, NULL, 0, 0 },
@@ -40,7 +44,7 @@ static const repair_check_t CHK_G03[] = {
     { CHK_EQUIP, NULL, NULL, NULL, NULL, 0, 0 },
 };
 static const repair_check_t CHK_C01[] = {
-    { CHK_CFG_RANGE, COOL_CFG, NULL, "flow_rate", NULL, 110, 130 },
+    { CHK_CFG_RANGE, COOL_CFG, NULL, COOL_FLOW_KEY, NULL, COOL_FLOW_NORMAL, COOL_FLOW_NORMAL },
 };
 static const repair_check_t CHK_C02[] = {
     { CHK_EQUIP, NULL, NULL, NULL, NULL, 0, 0 },
@@ -94,6 +98,17 @@ const char *repair_live_sensor(int fac)
     if (fac == FAC_COOLING)
         return COOL_LIVE;
     return NULL;
+}
+
+double repair_coolant_flow(const char *root)
+{
+    char path[PATH_MAX];
+    double v;
+
+    snprintf(path, sizeof path, "%s/%s", root, COOL_CFG);
+    if (kv_get_double(path, COOL_FLOW_KEY, &v) != 0)
+        return COOL_FLOW_NORMAL;
+    return v < 0 ? 0 : (v > 100 ? 100 : v);
 }
 
 static const char *base_name(const char *path)

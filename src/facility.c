@@ -42,6 +42,7 @@ typedef struct {
 
     float    metrics[METRIC_COUNT];
     int      metrics_init;
+    float    coolant_flow;   /* 냉각실: 설정 파일의 목표 유량 */
     unsigned rng;
 } facility_t;
 
@@ -85,21 +86,23 @@ static void compute_targets(const facility_t *f, float tgt[METRIC_COUNT], float 
             tgt[3] = 192.f;
         }
         break;
-    case FAC_COOLING:
-        tgt[0] = 32.f + 0.8f * L;   amp[0] = 0.4f;     /* 냉각수 온도 */
-        tgt[1] = 85.f;              amp[1] = 0.3f;     /* 수위 */
-        tgt[2] = 120.f - 2.f * L;   amp[2] = 1.5f;     /* 유량 */
-        tgt[3] = 94.f - 3.f * L;    amp[3] = 0.5f;     /* 냉각 효율 */
-        if (ev == EV_C01) {
-            tgt[0] = 52.f; tgt[1] = 58.f; tgt[2] = 45.f; tgt[3] = 52.f;
-            amp[2] = 3.f;
-        }
+    case FAC_COOLING: {
+        /* 유량은 설정 파일의 목표 유량을 따라간다. 모자란 만큼 물이 뜨거워지고 효율이 떨어진다 */
+        float lack = 70.f - f->coolant_flow;
+
+        if (lack < 0.f)
+            lack = 0.f;
+        tgt[0] = 32.f + 0.8f * L + 0.6f * lack;         amp[0] = 0.4f;   /* 냉각수 온도 */
+        tgt[1] = 85.f;                                  amp[1] = 0.3f;   /* 수위 */
+        tgt[2] = f->coolant_flow - 1.2f * L;            amp[2] = 1.f;    /* 유량 */
+        tgt[3] = 94.f - 3.f * L - 1.4f * lack;          amp[3] = 0.5f;   /* 냉각 효율 */
         if (down) {                                    /* 펌프가 서면 물이 돌지 않는다 */
             tgt[0] = 66.f;
             tgt[2] = 0.f;  amp[2] = 0.f;
             tgt[3] = 18.f;
         }
         break;
+    }
     default: /* FAC_POWER */
         tgt[0] = 380.f - 3.f * L;   amp[0] = 1.f;      /* 모선 전압 */
         tgt[1] = 5200.f - 60.f * L; amp[1] = 20.f;     /* 공급 전력 */
@@ -127,6 +130,8 @@ static void update_metrics(facility_t *f)
     float tgt[METRIC_COUNT], amp[METRIC_COUNT];
     int i;
 
+    if (f->fac == FAC_COOLING)
+        f->coolant_flow = (float)repair_coolant_flow(f->root);
     compute_targets(f, tgt, amp);
     for (i = 0; i < METRIC_COUNT; i++) {
         if (!f->metrics_init)
@@ -488,6 +493,7 @@ int facility_run(const facility_args_t *args)
     snprintf(f.root, sizeof f.root, "%s", args->root);
     f.host = args->host_pid > 0 ? args->host_pid : getppid();
     f.event = EV_NONE;
+    f.coolant_flow = 70.f;
     f.rng = (unsigned)getpid() * 2654435761u + (unsigned)f.fac;
     equip_init(&f.equip);
     g_term = g_verify = g_chld = 0;

@@ -250,7 +250,7 @@ static inline int metric_level(int fac, int idx, float v)
           { 140.f, 180.f, 120.f, 200.f } },
         { { -1e9f, 45.f, -1e9f, 60.f },
           { 60.f, 1e9f, 35.f, 1e9f },
-          { 90.f, 1e9f, 50.f, 1e9f },
+          { 60.f, 1e9f, 45.f, 1e9f },             /* 냉각수 유량: 정상 70 */
           { 80.f, 1e9f, 55.f, 1e9f } },
         { { 360.f, 400.f, 330.f, 430.f },
           { 4700.f, 1e9f, 3500.f, 1e9f },
