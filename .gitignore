@@ -1,0 +1,5 @@
+build/
+equip
+demo
+demo_plant/
+*.o
