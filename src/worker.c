@@ -4,7 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "fac_mgr.h"
@@ -20,8 +22,9 @@
 #define SENSOR_LINK COOL "cooling_sensor_link"
 #define SENSOR_A "cooling_sensor_a.dat"
 #define SENSOR_B "cooling_sensor_b.dat"
+
 #define BACKTIME_MS 10000
-#define REPAIR_MS 20000
+#define REPAIR_MS 40000
 
 static const int events[] = {
     EV_C01, EV_C03, EV_P01, EV_P02, EV_P03, EV_NONE
@@ -34,6 +37,57 @@ typedef struct {
 } worker_t;
 
 static volatile sig_atomic_t quitting;
+static struct termios saved_tty;
+static int editing_tty;
+
+static int begin_input(void)
+{
+    struct termios mode;
+
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO))
+        return 0;
+    if (tcgetattr(STDIN_FILENO, &saved_tty) < 0)
+        return -1;
+
+    mode = saved_tty;
+    mode.c_lflag &= ~(ICANON | ECHO | ECHONL | IEXTEN);
+    mode.c_cc[VMIN] = 1;
+    mode.c_cc[VTIME] = 0;
+
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &mode) < 0)
+        return -1;
+
+    editing_tty = 1;
+    return 0;
+}
+
+static void clear_input_line(void)
+{
+    if (editing_tty)
+        fputs("\r\033[2K", stdout);
+}
+
+static void draw_input(const char *line, size_t used)
+{
+    if (editing_tty) {
+        struct winsize size;
+        size_t start = 0;
+
+        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
+            size.ws_col > 14 && used > (size_t)(size.ws_col - 14)) {
+            start = used - (size_t)(size.ws_col - 14);
+            while (start < used && ((unsigned char)line[start] & 0xc0) == 0x80)
+                start++;
+        }
+
+        clear_input_line();
+        fputs("발전소 직원> ", stdout);
+        fwrite(line + start, 1, used - start, stdout);
+    } else {
+        fputs("발전소 직원> ", stdout);
+    }
+    fflush(stdout);
+}
 
 static void on_signal(int sig)
 {
@@ -156,7 +210,7 @@ static void request_verify(worker_t *w)
     w->pending = 1;
 }
 
-/* -1: 오류, 0: 기존 프롬프트 유지, 1: 프롬프트 다시 표시 */
+/* -1: 오류, 0: 프롬프트 유지, 1: 프롬프트 다시 표시 */
 static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
 {
     int event = msg->event;
@@ -171,14 +225,17 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         fac_mgr_pause_others(&w->mgr, fac);
         w->active = event;
         w->deadline = now_ms() + REPAIR_MS;
+
+        clear_input_line();
         printf("\n%s 발생: %s (제한 %d초)\n",
                event_code(event), event_title(event), REPAIR_MS / 1000);
         return 1;
     }
 
-    /* P02는 차단기가 가동 중이라는 보고를 받은 뒤 수리 판정을 요청한다. */
+    /* P02는 차단기가 가동 중이라는 보고를 받은 뒤 판정을 요청한다. */
     if (w->active == EV_P02 && fac == FAC_POWER && event == EV_P02 &&
-        w->breaker_wait && (msg->type == FMSG_STATUS || msg->type == FMSG_EQUIP) &&
+        w->breaker_wait &&
+        (msg->type == FMSG_STATUS || msg->type == FMSG_EQUIP) &&
         msg->equip_state == EQ_RUNNING) {
         w->breaker_wait = 0;
         request_verify(w);
@@ -187,6 +244,8 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
     if (msg->type == FMSG_VERIFY && w->pending && event == w->active &&
         fac == event_facility(event)) {
         w->pending = 0;
+        clear_input_line();
+
         if (!msg->verify_ok) {
             printf("\n%s 수리 미완료: %s\n", event_code(event), msg->detail);
             return 1;
@@ -389,10 +448,12 @@ static void operate_breaker(worker_t *w, int restart)
 
     int r = restart ? fac_mgr_equip_restart(&w->mgr, FAC_POWER)
                     : fac_mgr_equip_signal(&w->mgr, FAC_POWER, SIGCONT);
+
     if (r < 0) {
         perror("차단기 조작");
         return;
     }
+
     w->breaker_wait = 1;
     puts(restart ? "차단기 재실행을 요청했습니다."
                  : "차단기 재개를 요청했습니다.");
@@ -461,7 +522,7 @@ int main(void)
     worker_t w = {.active = EV_NONE, .location = -1};
     char line[128];
     size_t used = 0;
-    int overflow = 0, prompt = 1, result = EXIT_SUCCESS;
+    int overflow = 0, escape = 0, prompt = 1, result = EXIT_SUCCESS;
 
     if (install_signals() < 0 || fac_mgr_init(&w.mgr, ROOT) < 0) {
         perror("호스트 초기화");
@@ -479,12 +540,17 @@ int main(void)
         goto done;
     }
 
+    if (begin_input() < 0) {
+        perror("터미널 입력 설정");
+        result = EXIT_FAILURE;
+        goto done;
+    }
+
     while (!quitting) {
         struct pollfd fds[FAC_COUNT + 1] = {{STDIN_FILENO, POLLIN, 0}};
 
         if (prompt) {
-            printf("발전소 직원> ");
-            fflush(stdout);
+            draw_input(line, used);
             prompt = 0;
         }
         for (int i = 0; i < FAC_COUNT; i++) {
@@ -500,7 +566,9 @@ int main(void)
         }
         if (quitting)
             break;
+
         if (w.active != EV_NONE && now_ms() >= w.deadline) {
+            clear_input_line();
             puts("\n수리 제한 시간 초과: 게임 오버");
             break;
         }
@@ -511,8 +579,10 @@ int main(void)
 
             if (fds[i + 1].fd < 0)
                 continue;
+
             while ((r = fac_mgr_read(&w.mgr, i, &msg)) == FAC_GOT) {
                 int redraw = handle_report(&w, i, &msg);
+
                 if (redraw < 0) {
                     result = EXIT_FAILURE;
                     goto done;
@@ -520,6 +590,7 @@ int main(void)
                 if (redraw)
                     prompt = 1;
             }
+
             if (r != FAC_NONE) {
                 fprintf(stderr, "\n%s 시설 보고 읽기 실패\n",
                         facility_name(i));
@@ -550,11 +621,38 @@ int main(void)
                 break;
 
             for (ssize_t i = 0; i < n; i++) {
-                if (input[i] == '\n') {
+                unsigned char c = (unsigned char)input[i];
+
+                /* 방향키의 이스케이프 문자는 명령에 넣지 않는다. */
+                if (editing_tty && escape == 1) {
+                    escape = (c == '[' || c == 'O') ? 2 : 0;
+                    if (escape)
+                        continue;
+                } else if (editing_tty && escape == 2) {
+                    if (c == '\n' || c == '\r') {
+                        escape = 0;
+                    } else {
+                        if (c >= 0x40 && c <= 0x7e)
+                            escape = 0;
+                        continue;
+                    }
+                }
+                if (editing_tty && c == 27) {
+                    escape = 1;
+                    continue;
+                }
+
+                if (c == '\n' || (editing_tty && c == '\r')) {
+                    if (editing_tty) {
+                        draw_input(line, used);
+                        putchar('\n');
+                    }
+
                     if (w.active != EV_NONE && now_ms() >= w.deadline) {
                         puts("수리 제한 시간 초과: 게임 오버");
                         goto done;
                     }
+
                     if (overflow) {
                         puts("명령어가 너무 깁니다.");
                     } else {
@@ -562,13 +660,29 @@ int main(void)
                         if (run_command(&w, line))
                             goto done;
                     }
+
                     used = 0;
                     overflow = 0;
                     prompt = 1;
-                } else if (used < sizeof line - 1) {
-                    line[used++] = input[i];
-                } else {
-                    overflow = 1;
+                } else if (editing_tty && (c == 8 || c == 127)) {
+                    if (used > 0) {
+                        do {
+                            used--;
+                        } while (used > 0 &&
+                                 ((unsigned char)line[used] & 0xc0) == 0x80);
+                    }
+                    prompt = 1;
+                } else if (editing_tty && c == 21) {
+                    used = 0;  /* Ctrl+U: 입력한 글자만 모두 지운다. */
+                    prompt = 1;
+                } else if (!editing_tty || c >= 32 || c == '\t') {
+                    if (used < sizeof line - 1)
+                        line[used++] = editing_tty && c == '\t' ? ' ' : (char)c;
+                    else if (!editing_tty)
+                        overflow = 1;
+
+                    if (editing_tty)
+                        prompt = 1;
                 }
             }
             fflush(stdout);
@@ -576,6 +690,12 @@ int main(void)
     }
 
 done:
+    if (editing_tty) {
+        clear_input_line();
+        fflush(stdout);
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &saved_tty) < 0)
+            perror("터미널 설정 복원");
+    }
     fac_mgr_shutdown(&w.mgr);
     return result;
 }
