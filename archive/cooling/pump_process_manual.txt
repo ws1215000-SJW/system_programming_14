@@ -1,0 +1,25 @@
+=== COOLING PUMP RECOVERY MANUAL ===
+
+Equipment: PUMP-B
+Model: CP-70
+Location: Cooling Room
+
+[ERROR C02]
+Cooling pump process stopped.
+
+[STEP 1]
+Check the pump process state.
+
+[STEP 2]
+If the process is STOPPED:
+Use "resume pump".
+
+[STEP 3]
+If the process is TERMINATED:
+Use "restart pump".
+
+[STEP 4]
+Check whether the pump is running.
+
+[WARNING]
+Do not confuse STOPPED with TERMINATED.

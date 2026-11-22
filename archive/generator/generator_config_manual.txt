@@ -1,0 +1,21 @@
+=== GENERATOR CONFIGURATION MANUAL ===
+
+Model: GT-480
+Serial: GN-2291-K
+
+Configuration File:
+generator_config.cfg
+
+Required Mode: 0640
+Required Operation: AUTO
+Target Output: 480
+
+[RECOVERY]
+1. Check the configuration file permission.
+2. Restore permission to 0640.
+3. Restart the generator controller.
+4. Verify generator operation.
+
+[NOTICE]
+Final restart instructions are stored
+in the restricted archive.

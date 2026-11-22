@@ -1,0 +1,3 @@
+# circuit_label.txt
+circuit_a=CR-A1
+circuit_b=CR-B4

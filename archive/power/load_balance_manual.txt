@@ -1,0 +1,19 @@
+=== POWER LOAD BALANCE MANUAL ===
+
+Equipment: Power Distribution Controller
+
+[ERROR P03]
+Power distribution imbalance.
+
+[REQUIRED CONFIGURATION]
+
+supply_generator=40
+supply_cooling=60
+
+Total Supply: 100
+
+[RECOVERY]
+1. Check the current power distribution.
+2. Set generator supply to 40.
+3. Set cooling supply to 60.
+4. Verify the total supply equals 100.

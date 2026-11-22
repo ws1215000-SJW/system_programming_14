@@ -1,0 +1,29 @@
+=== POWER PLANT ERROR CODE INDEX ===
+
+[G01] Temperature Sensor Link Error
+File: generator/sensor_link_map.csv
+
+[G02] Turbine Process Stopped
+File: generator/turbine_restart_guide.txt
+
+[G03] Generator Restart Failure
+File: generator/generator_config_manual.txt
+File: restricted/generator_restart_guide.txt
+
+[C01] Coolant Flow Low
+File: cooling/coolant_flow_spec.csv
+
+[C02] Cooling Pump Process Stopped
+File: cooling/pump_process_manual.txt
+
+[C03] Cooling Sensor Path Error
+File: cooling/cooling_sensor_history.log
+
+[P01] Circuit Overload
+File: power/power_distribution_map.csv
+
+[P02] Breaker Process Stopped
+File: power/breaker_reset_manual.txt
+
+[P03] Power Distribution Imbalance
+File: power/load_balance_manual.txt

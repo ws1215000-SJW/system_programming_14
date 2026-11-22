@@ -1,0 +1,8 @@
+equipment_id,model,location,description
+GN-2291-K,GT-480,generator,Main Generator
+TS-B,TEMP-SENSOR-B,generator,Temperature Sensor
+PUMP-B,CP-70,cooling,Cooling Pump
+CS-B,COOL-SENSOR-B,cooling,Cooling Sensor
+CR-A1,CIRCUIT-A,power,Power Circuit A
+CR-B4,CIRCUIT-B,power,Power Circuit B
+BK-7,BREAKER-7,power,Main Circuit Breaker

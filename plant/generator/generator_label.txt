@@ -1,0 +1,3 @@
+# generator_label.txt
+model=GT-480
+serial=GN-2291-K

@@ -1,2 +1,3 @@
-pump_id, target_flow
-PUMP-B, 70
+pump_id,target_flow
+PUMP-A,50
+PUMP-B,70
