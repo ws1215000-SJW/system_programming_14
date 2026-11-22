@@ -1,0 +1,23 @@
+=== COOLING SENSOR REPLACEMENT HISTORY ===
+
+[OLD RECORD]
+Date: 2024-05-10
+Sensor ID: CS-A
+Target: cooling_sensor_a.dat
+Status: RETIRED
+
+[CURRENT RECORD]
+Date: 2026-03-18
+Sensor ID: CS-B
+Target: cooling_sensor_b.dat
+Status: ACTIVE
+
+[IMPORTANT]
+The active sensor data must be updated
+within the last 5 seconds.
+
+[RECOVERY]
+1. Check the sensor ID.
+2. Check the current symbolic link.
+3. Replace the incorrect link.
+4. Verify that the live sensor data is fresh.

@@ -1,0 +1,22 @@
+=== TURBINE RESTART GUIDE ===
+
+Equipment: Turbine Controller
+Location: Generator Room
+
+[STEP 1]
+Check the turbine process state.
+
+[STEP 2]
+If the process is STOPPED:
+Use "resume turbine".
+
+[STEP 3]
+If the process is TERMINATED:
+Use "restart turbine".
+
+[STEP 4]
+Check the process state again.
+
+[CAUTION]
+A stopped process and a terminated process
+require different recovery methods.

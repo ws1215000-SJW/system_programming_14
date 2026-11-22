@@ -1,0 +1,3 @@
+# generator_status.txt
+output=480
+restart=ready

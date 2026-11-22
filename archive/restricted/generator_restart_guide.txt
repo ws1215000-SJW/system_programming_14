@@ -1,0 +1,21 @@
+=== RESTRICTED DOCUMENT ===
+GENERATOR FINAL RESTART PROCEDURE
+
+Authorization: GRANTED
+
+Equipment: GT-480
+Serial: GN-2291-K
+
+[FINAL RECOVERY PROCEDURE]
+
+1. Confirm Cooling Room recovery: 100%.
+2. Confirm Power Room recovery: 100%.
+3. Check generator_config.cfg.
+4. Restore file permission to 0640.
+5. Restart the generator controller.
+6. Verify generator process status.
+7. Confirm final recovery.
+
+[WARNING]
+Do not restart the generator before
+cooling and power systems are restored.

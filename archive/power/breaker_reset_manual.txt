@@ -1,0 +1,29 @@
+=== BREAKER RESET MANUAL ===
+
+Equipment: BK-7
+Location: Power Room
+
+[ERROR P02]
+Circuit breaker process failure.
+
+[SAFETY CHECK]
+The fault circuit must be isolated
+before restarting the breaker.
+
+Required Configuration:
+fault_isolated=1
+
+[STEP 1]
+Check the power configuration.
+
+[STEP 2]
+Set fault_isolated to 1.
+
+[STEP 3]
+Check the breaker process state.
+
+[STEP 4]
+Resume or restart the breaker.
+
+[STEP 5]
+Verify breaker operation.

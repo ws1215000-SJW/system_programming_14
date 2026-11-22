@@ -1,0 +1,3 @@
+# circuit_status.txt
+circuit_a=normal
+circuit_b=normal
