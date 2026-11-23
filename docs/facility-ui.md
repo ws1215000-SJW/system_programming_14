@@ -5,13 +5,14 @@
 - 시설 프로세스: 백 타임, 위험 이벤트 발생 알림, 시그널을 받아 수리 확인
 - ncurses 화면: 발전소 직원(호스트)과 관제사(클라이언트)
 
-호스트 프로그램(시설 fork, 명령 처리, 파일 고장 주입), 클라이언트 프로그램, 현장·관제 파일 내용은 여기에 없다. 아래 "붙이는 법"대로 연결하면 된다.
+호스트 프로그램(`src/worker.c`, 시설 fork·명령 처리·파일 고장 주입)과 클라이언트 프로그램(`client/`)은 이 모듈을 가져다 쓴다. 두 프로그램 모두 `src/ui.c` 화면 위에서 돈다.
 
 ## 빌드와 실행
 
 ```sh
 sudo apt install build-essential libncurses-dev
-make                    # equip, demo
+make                    # equip, demo, worker
+./worker --solo-test    # 발전소 직원 콘솔 (터미널이면 ncurses 화면)
 make test               # ncurses 없이 도는 테스트
 ./demo field --fast     # 발전소 직원 화면 + 실제 시설 프로세스
 ./demo control --fast   # 관제사 화면
@@ -64,7 +65,7 @@ make test               # ncurses 없이 도는 테스트
 | P02 | 차단기 제어 정지 | `power_config.cfg` 의 `fault_isolated` | `fault_isolated=1`, 차단기 제어 프로세스 가동 |
 | P03 | | `power_config.cfg` 의 `supply_generator`, `supply_cooling` | 40 과 60, 합 100 |
 
-- C01 은 저장소의 `plant/cooling/` 파일과 `src/worker.c` 의 값(정상 70, 고장 40)에 맞췄다. 나머지 이벤트의 키 이름과 정답 값은 현장 파일이 정해지기 전에 임시로 잡은 것이다. 현장 파일에 맞춰 `src/repair_check.c` 맨 위의 표와 `tools/fixture.c` 를 고치면 된다.
+- 키 이름과 정답 값은 저장소의 `plant/` 파일과 `src/worker.c` 가 넣는 고장 값에 맞춰져 있다. 바꿀 때는 `src/repair_check.c` 맨 위의 표와 `tools/fixture.c` 를 같이 고친다.
 - 냉각실의 유량 수치는 `coolant_config.cfg` 의 `target_flow` 를 따라간다. 직원이 `repair coolant_flow <값>` 으로 바꾸면 관제사 화면의 유량·온도·효율이 같이 움직인다.
 - `generator_config.cfg` 에 소유자 읽기 권한이 없으면 터빈 제어 프로세스 재실행이 거부된다. G03 에서는 권한을 먼저 고쳐야 한다.
 - 링크는 상대 경로든 절대 경로든 같은 파일을 가리키면 통과한다.

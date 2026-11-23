@@ -23,8 +23,8 @@ all: equip demo worker
 equip: $(BUILD)/equip_main.o $(BUILD)/equipment.o
 	$(CC) $(CFLAGS) -o $@ $^
 
-worker: $(BUILD)/worker.o $(FAC_OBJS) | equip
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+worker: $(BUILD)/worker.o $(sort $(FAC_OBJS) $(UI_OBJS)) | equip
+	$(CC) $(CFLAGS) -o $@ $^ $(UI_LIBS) -lm
 
 demo: $(BUILD)/tools/demo.o $(BUILD)/tools/fixture.o $(sort $(FAC_OBJS) $(UI_OBJS))
 	$(CC) $(CFLAGS) -o $@ $^ $(UI_LIBS) -lm
@@ -38,7 +38,9 @@ $(BUILD)/tools/%.o: tools/%.c $(HEADERS) | $(BUILD)/tools
 $(BUILD)/tests/%: tests/%.c $(BUILD)/tools/fixture.o $(FAC_OBJS) $(HEADERS) | $(BUILD)/tests
 	$(CC) $(CFLAGS) -Itests -o $@ $< $(BUILD)/tools/fixture.o $(FAC_OBJS) -lm
 
-$(BUILD)/tests/test_worker_c02: src/worker.c
+# worker.c 를 통째로 include 하므로 화면 모듈도 같이 링크한다
+$(BUILD)/tests/test_worker_c02: tests/test_worker_c02.c src/worker.c $(BUILD)/tools/fixture.o $(sort $(FAC_OBJS) $(UI_OBJS)) $(HEADERS) | $(BUILD)/tests
+	$(CC) $(CFLAGS) -Itests -o $@ $< $(BUILD)/tools/fixture.o $(sort $(FAC_OBJS) $(UI_OBJS)) $(UI_LIBS) -lm
 
 $(BUILD) $(BUILD)/tools $(BUILD)/tests:
 	mkdir -p $@
