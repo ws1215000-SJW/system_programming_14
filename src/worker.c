@@ -1,10 +1,12 @@
 #define _XOPEN_SOURCE 700
 #define _DEFAULT_SOURCE
 #include <errno.h>
+#include <math.h>
 #include <ftw.h>
 #include <sys/wait.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,7 @@
 #include <sys/file.h>
 #include "kvfile.h"
 #include "timeutil.h"
+#include "ui.h"
 
 #define ROOT "plant"
 #define COOL ROOT "/cooling/"
@@ -48,11 +51,68 @@ typedef struct {
     int pump_wait, turbine_wait, recovering, solo, variant;
     int64_t reported_at[FAC_COUNT];
     int64_t deadline;
+    int game_over;
 } worker_t;
 
 static volatile sig_atomic_t quitting;
 static struct termios saved_tty;
 static int editing_tty;
+
+/* 터미널이면 ncurses 화면(ui.c), 파이프면 줄 단위 출력 */
+static int ui_on;
+static char last_error[256];
+
+static void emit(ui_kind_t kind, FILE *plain, const char *fmt, va_list ap)
+{
+    char buf[1024];
+    char *text = buf;
+    va_list copy;
+
+    va_copy(copy, ap);
+    int n = vsnprintf(buf, sizeof buf, fmt, copy);
+    va_end(copy);
+    if (n >= (int)sizeof buf && (text = malloc((size_t)n + 1)) != NULL)
+        vsnprintf(text, (size_t)n + 1, fmt, ap);
+    else if (!text)
+        text = buf;
+
+    if (!ui_on) {
+        fputs(text, plain);
+        fputc('\n', plain);
+    } else {
+        ui_print(kind, "%s", text);
+        if (kind == UI_ERR)
+            snprintf(last_error, sizeof last_error, "%s", text);
+    }
+    if (text != buf)
+        free(text);
+}
+
+static void say(ui_kind_t kind, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void say(ui_kind_t kind, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    emit(kind, stdout, fmt, ap);
+    va_end(ap);
+}
+
+static void warn(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void warn(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    emit(UI_ERR, stderr, fmt, ap);
+    va_end(ap);
+}
+
+static void fail(const char *what)
+{
+    warn("%s: %s", what, strerror(errno));
+}
+
 
 static int begin_input(void)
 {
@@ -132,7 +192,7 @@ static int set_number(const char *path, const char *key, int number)
 
     snprintf(value, sizeof value, "%d", number);
     if (kv_set(path, key, value) < 0) {
-        perror(path);
+        fail(path);
         return -1;
     }
     return 0;
@@ -200,8 +260,8 @@ static int set_generator_mode(mode_t mode)
     mode_t actual = st.st_mode & 07777;
     if (actual == mode)
         return 0;
-    fprintf(stderr, "%s 권한 변경 실패: 요청 %04o, 실제 %04o. "
-            "Linux 권한을 지원하는 파일시스템(예: WSL 홈)에 프로젝트를 복사해 실행하세요.\n",
+    warn("%s 권한 변경 실패: 요청 %04o, 실제 %04o. "
+         "Linux 권한을 지원하는 파일시스템(예: WSL 홈)에 프로젝트를 복사해 실행하세요.",
             GEN_CFG, (unsigned)mode, (unsigned)actual);
     errno = ENOTSUP;
     return -1;
@@ -245,7 +305,7 @@ static int arm_next(worker_t *w, int delay)
 static void send_verify(worker_t *w)
 {
     if (fac_mgr_request_verify(&w->mgr, event_facility(w->active)) < 0) {
-        perror("수리 확인 요청");
+        fail("수리 확인 요청");
         return;
     }
     w->pending = 1;
@@ -314,19 +374,19 @@ static void request_verify(worker_t *w)
     if (fac < 0 || fac >= FAC_COUNT) return;
     repair_verify(ROOT, w->active, w->mgr.fac[fac].last.equip_state, &r);
     if (!r.ok && r.failed == CHK_FRESH) {
-        if (!w->recovering) puts("회복 확인 중: 현용 센서의 다음 갱신 대기");
+        if (!w->recovering) say(UI_SYS, "회복 확인 중: 현용 센서의 다음 갱신 대기");
         w->recovering = 1;
         return;
     }
     if (!r.ok) {
         w->recovering = 0;
-        puts("추가 조작 필요: 현재 설정으로 검증에 실패했습니다.");
+        say(UI_ERR, "추가 조작 필요: 현재 설정으로 검증에 실패했습니다.");
         return;
     }
     /* A cached reading can predate the configuration write. Wait for the
        next periodic measurement before accepting either new setpoint. */
     if (!w->recovering && (w->active == EV_C01 || w->active == EV_P03)) {
-        puts("회복 확인 중: 새 설정 적용 후 계측 보고 대기");
+        say(UI_SYS, "회복 확인 중: 새 설정 적용 후 계측 보고 대기");
         w->recovering = 1;
         return;
     }
@@ -334,7 +394,7 @@ static void request_verify(worker_t *w)
         char state[32];
         if (kv_get(POWER "circuit_status.txt", "circuit_a", state, sizeof state) ||
             strcmp(state, "isolated")) {
-            puts("추가 조작 필요: 현재 회로 상태로 검증에 실패했습니다.");
+            say(UI_ERR, "추가 조작 필요: 현재 회로 상태로 검증에 실패했습니다.");
             w->recovering = 0;
             return;
         }
@@ -342,7 +402,7 @@ static void request_verify(worker_t *w)
     const char *why = recovery_reason(w);
     if (why) {
         if (!w->recovering)
-            printf("회복 확인 중: %s\n", why);
+            say(UI_SYS, "회복 확인 중: %s", why);
         w->recovering = 1;
         return;
     }
@@ -352,17 +412,17 @@ static void request_verify(worker_t *w)
 
 static void recover_pump(worker_t *w, int state)
 {
-    printf("C02 펌프 상태: %s\n", equip_state_key(state));
+    say(UI_OUT, "C02 펌프 상태: %s", equip_state_key(state));
     switch (state) {
     case EQ_STOPPED:
         if (fac_mgr_equip_signal(&w->mgr, FAC_COOLING, SIGCONT) < 0) {
-            perror("C02 펌프 재개");
+            fail("C02 펌프 재개");
             return;
         }
         break;
     case EQ_DEAD:
         if (fac_mgr_equip_restart(&w->mgr, FAC_COOLING) < 0) {
-            perror("C02 펌프 재실행");
+            fail("C02 펌프 재실행");
             return;
         }
         break;
@@ -370,11 +430,11 @@ static void recover_pump(worker_t *w, int state)
         request_verify(w);
         return;
     default:
-        puts("C02 상태 조회 실패: 알 수 없는 펌프 상태입니다.");
+        say(UI_OUT, "C02 상태 조회 실패: 알 수 없는 펌프 상태입니다.");
         return;
     }
     w->pump_wait = 1;
-    puts("C02 복구 요청 완료. 시설의 RUNNING 보고를 기다립니다.");
+    say(UI_OUT, "C02 복구 요청 완료. 시설의 RUNNING 보고를 기다립니다.");
 }
 
 /* -1: 오류, 0: 프롬프트 유지, 1: 프롬프트 다시 표시 */
@@ -392,7 +452,7 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         event != EV_NONE && event == events[w->step] &&
         fac == event_facility(event)) {
         if (inject_fault(event) < 0) {
-            fprintf(stderr, "%s 고장 적용 실패\n", event_code(event));
+            warn("%s 고장 적용 실패", event_code(event));
             return -1;
         }
         if ((event == EV_C01 && fac_mgr_link(&w->mgr, FAC_GENERATOR, 6) < 0) ||
@@ -403,11 +463,11 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         w->deadline = w->reported_at[fac] + REPAIR_LIMIT_MS;
 
         clear_input_line();
-        printf("\n%s 발생: %s (제한 %d초)\n",
+        say(UI_ERR, "\n%s 발생: %s (제한 %d초)",
                event_code(event), event_title(event), REPAIR_LIMIT_MS / 1000);
         if (event == EV_G02 || event == EV_G03)
-            printf("터빈 상태: %s\n", equip_state_key(msg->equip_state));
-        puts("현장 조사: 해당 시설로 이동해 help, status, cat 명령을 사용하세요.");
+            say(UI_OUT, "터빈 상태: %s", equip_state_key(msg->equip_state));
+        say(UI_OUT, "현장 조사: 해당 시설로 이동해 help, status, cat 명령을 사용하세요.");
         return 1;
     }
 
@@ -424,14 +484,14 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         (msg->type == FMSG_STATUS || msg->type == FMSG_EQUIP)) {
         if (msg->equip_state == EQ_RUNNING) {
             clear_input_line();
-            puts("시설 보고: 터빈 RUNNING");
+            say(UI_OK, "시설 보고: 터빈 RUNNING");
             w->turbine_wait = 0;
             request_verify(w);
             return 1;
         }
         if (msg->type == FMSG_EQUIP && msg->equip_state == EQ_DEAD) {
             clear_input_line();
-            puts("터빈 조작 실패");
+            say(UI_ERR, "터빈 조작 실패");
             w->turbine_wait = 0;
             return 1;
         }
@@ -452,11 +512,11 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         clear_input_line();
 
         if (!msg->verify_ok) {
-            printf("\n%s 수리 미완료\n", event_code(event));
+            say(UI_ERR, "\n%s 수리 미완료", event_code(event));
             return 1;
         }
 
-        printf("\n%s 수리 완료\n", event_code(event));
+        say(UI_OK, "\n%s 수리 완료", event_code(event));
         if ((event == EV_C01 && fac_mgr_link(&w->mgr, FAC_GENERATOR, 0) < 0) ||
             (event == EV_P01 && fac_mgr_link(&w->mgr, FAC_COOLING, 0) < 0))
             return -1;
@@ -466,14 +526,14 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
 
         if (arm_next(w, BACKTIME_MS) < 0) {
             if (events[w->step] == EV_C02) {
-                perror("C02 예약 실패 (debug next로 재시도)");
+                fail("C02 예약 실패 (debug next로 재시도)");
                 return 1;
             }
-            perror("다음 이벤트 예약");
+            fail("다음 이벤트 예약");
             return -1;
         }
         if (events[w->step] == EV_NONE)
-            puts("냉각실·배전실·발전실 이벤트를 모두 수리했습니다.");
+            say(UI_OK, "냉각실·배전실·발전실 이벤트를 모두 수리했습니다.");
         return 1;
     }
     return 0;
@@ -482,26 +542,36 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
 static void show_file(const char *path)
 {
     FILE *f = fopen(path, "r");
-    int ch, last = '\n';
+    char *text = NULL;
+    size_t len = 0;
+    int ch;
 
     if (!f) {
-        perror(path);
+        fail(path);
         return;
     }
     if (flock(fileno(f), LOCK_SH) < 0) {
-        perror(path);
+        fail(path);
         fclose(f);
         return;
     }
-    while ((ch = fgetc(f)) != EOF) {
-        putchar(ch);
-        last = ch;
+    FILE *mem = open_memstream(&text, &len);
+    if (!mem) {
+        fail(path);
+        fclose(f);
+        return;
     }
-    if (last != '\n')
-        putchar('\n');
+    while ((ch = fgetc(f)) != EOF)
+        fputc(ch, mem);
     if (ferror(f))
-        perror(path);
+        fail(path);
     fclose(f);
+    fclose(mem);
+    if (len > 0 && text[len - 1] == '\n')
+        text[--len] = '\0';
+    if (len > 0)
+        say(UI_OUT, "%s", text);
+    free(text);
 }
 
 static void cat_file(int location, const char *name)
@@ -540,7 +610,7 @@ static void cat_file(int location, const char *name)
     if (path && strstr(name, ".dat")) {
         struct stat st;
         if (!stat(path, &st))
-            printf("mtime=%lld (%lld초 전)\n", (long long)st.st_mtime,
+            say(UI_OUT, "mtime=%lld (%lld초 전)", (long long)st.st_mtime,
                    (long long)(time(NULL) - st.st_mtime));
     }
     if (path && !strcmp(path, GEN_LINK)) {
@@ -556,7 +626,7 @@ static void cat_file(int location, const char *name)
     if (path)
         show_file(path);
     else
-        puts("현재 위치에서 열람할 수 없는 파일입니다.");
+        say(UI_OUT, "현재 위치에서 열람할 수 없는 파일입니다.");
 }
 
 static void show_sensor_link(const char *path)
@@ -565,11 +635,11 @@ static void show_sensor_link(const char *path)
     ssize_t n = readlink(path, target, sizeof target - 1);
 
     if (n < 0) {
-        perror(path);
+        fail(path);
         return;
     }
     target[n] = '\0';
-    printf("%s -> %s\n", strrchr(path, '/') + 1, target);
+    say(UI_OUT, "%s -> %s", strrchr(path, '/') + 1, target);
 }
 
 static int number(const char *str, int max, int *out)
@@ -595,11 +665,11 @@ static void repair(worker_t *w, char *v[], int n)
             goto usage;
         if (w->location != FAC_GENERATOR || w->active != EV_G03 ||
             w->pending || w->turbine_wait)
-            puts("발전실에서 G03 수리 중에 사용하세요.");
+            say(UI_OUT, "발전실에서 G03 수리 중에 사용하세요.");
         else if (set_generator_mode((mode_t)strtol(v[2], NULL, 8)) < 0)
-            perror(GEN_CFG);
+            fail(GEN_CFG);
         else {
-            puts("입력한 권한을 적용했습니다.");
+            say(UI_OUT, "입력한 권한을 적용했습니다.");
         }
         return;
     }
@@ -623,11 +693,11 @@ static void repair(worker_t *w, char *v[], int n)
 
     if (w->location != event_facility(expected) ||
         (expected != EV_C01 && expected != w->active)) {
-        puts("해당 시설로 이동해서 이벤트가 진행 중일 때 수리하세요.");
+        say(UI_OUT, "해당 시설로 이동해서 이벤트가 진행 중일 때 수리하세요.");
         return;
     }
     if (w->pending || w->breaker_wait) {
-        puts("이전 수리의 확인을 기다리는 중입니다.");
+        say(UI_OUT, "이전 수리의 확인을 기다리는 중입니다.");
         return;
     }
 
@@ -636,7 +706,7 @@ static void repair(worker_t *w, char *v[], int n)
         if (n != 3 || (strcmp(v[2], TEMP_A) && strcmp(v[2], TEMP_B)))
             goto usage;
         if (relink_sensor(GEN_LINK, v[2]) < 0) {
-            perror(GEN_LINK);
+            fail(GEN_LINK);
             return;
         }
         show_sensor_link(GEN_LINK);
@@ -646,7 +716,7 @@ static void repair(worker_t *w, char *v[], int n)
             goto usage;
         if (set_flow(a) < 0)
             return;
-        printf("설정한 목표 유량: %d\n", a);
+        say(UI_OUT, "설정한 목표 유량: %d", a);
         if (w->active == EV_C01)
             request_verify(w);
         return;
@@ -655,10 +725,10 @@ static void repair(worker_t *w, char *v[], int n)
         if (n != 3 || (strcmp(v[2], "A") && strcmp(v[2], "B")))
             goto usage;
         if (relink_sensor(SENSOR_LINK, !strcmp(v[2], "A") ? SENSOR_A : SENSOR_B) < 0) {
-            perror(SENSOR_LINK);
+            fail(SENSOR_LINK);
             return;
         }
-        printf("연결한 센서: %s\n", v[2]);
+        say(UI_OUT, "연결한 센서: %s", v[2]);
         break;
 
     case EV_P01:
@@ -666,20 +736,20 @@ static void repair(worker_t *w, char *v[], int n)
             goto usage;
         if (set_load(a, b) < 0)
             return;
-        printf("설정한 회로 부하 A/B: %d/%d\n", a, b);
+        say(UI_OUT, "설정한 회로 부하 A/B: %d/%d", a, b);
         break;
 
     case EV_P02:
         if (n != 4 || !number(v[n - 1], 1, &a))
             goto usage;
         if (strcmp(v[2], "CR-A1")) {
-            puts("추가 조작 필요: 지정한 회로가 고장 회로와 다릅니다.");
+            say(UI_ERR, "추가 조작 필요: 지정한 회로가 고장 회로와 다릅니다.");
             return;
         }
         if (set_number(POWER_CFG, "fault_isolated", a) < 0 ||
             kv_set(POWER "circuit_status.txt", "circuit_a", a ? "isolated" : "fault") < 0)
             return;
-        puts(a ? "회로를 격리했습니다."
+        say(UI_OK, "%s", a ? "회로를 격리했습니다."
                : "고장 회로 격리를 해제했습니다.");
         return;
 
@@ -688,7 +758,7 @@ static void repair(worker_t *w, char *v[], int n)
             goto usage;
         if (set_split(a, b) < 0)
             return;
-        printf("설정한 발전실/냉각실 배분: %d/%d\n", a, b);
+        say(UI_OUT, "설정한 발전실/냉각실 배분: %d/%d", a, b);
         break;
 
     default:
@@ -699,10 +769,10 @@ static void repair(worker_t *w, char *v[], int n)
     return;
 
 usage:
-    puts("repair temperature_sensor <temp_sensor_a.dat|temp_sensor_b.dat> | repair generator_config <권한>");
-    puts("사용법: repair coolant_flow <0~100> | cooling_sensor <A|B>");
-    puts("        repair circuit_load <A> <B> | fault_isolated <회로 ID> <0|1>");
-    puts("        repair power_split <발전실> <냉각실>");
+    say(UI_OUT, "repair temperature_sensor <temp_sensor_a.dat|temp_sensor_b.dat> | repair generator_config <권한>");
+    say(UI_OUT, "사용법: repair coolant_flow <0~100> | cooling_sensor <A|B>");
+    say(UI_OUT, "        repair circuit_load <A> <B> | fault_isolated <회로 ID> <0|1>");
+    say(UI_OUT, "        repair power_split <발전실> <냉각실>");
 }
 
 static void operate_breaker(worker_t *w, int restart)
@@ -710,16 +780,16 @@ static void operate_breaker(worker_t *w, int restart)
     double isolated;
 
     if (w->location != FAC_POWER || w->active != EV_P02) {
-        puts("배전실에서 P02가 진행 중일 때만 조작할 수 있습니다.");
+        say(UI_OUT, "배전실에서 P02가 진행 중일 때만 조작할 수 있습니다.");
         return;
     }
     if (w->pending || w->breaker_wait) {
-        puts("차단기 상태를 확인 중입니다.");
+        say(UI_OUT, "차단기 상태를 확인 중입니다.");
         return;
     }
     if (kv_get_double(POWER_CFG, "fault_isolated", &isolated) < 0 ||
         isolated != 1.0) {
-        puts("현재 회로 상태로 조작할 수 없습니다.");
+        say(UI_OUT, "현재 회로 상태로 조작할 수 없습니다.");
         return;
     }
 
@@ -727,12 +797,12 @@ static void operate_breaker(worker_t *w, int restart)
                     : fac_mgr_equip_signal(&w->mgr, FAC_POWER, SIGCONT);
 
     if (r < 0) {
-        perror("차단기 조작");
+        fail("차단기 조작");
         return;
     }
 
     w->breaker_wait = 1;
-    puts(restart ? "차단기 재실행을 요청했습니다."
+    say(UI_OUT, "%s", restart ? "차단기 재실행을 요청했습니다."
                  : "차단기 재개를 요청했습니다.");
 }
 
@@ -755,7 +825,7 @@ static void show_manual(const char *topic)
             return;
         }
     }
-    puts("manual index|registry|history|이벤트코드");
+    say(UI_OUT, "manual index|registry|history|이벤트코드");
 }
 
 static int run_command(worker_t *w, char *line)
@@ -765,7 +835,7 @@ static int run_command(worker_t *w, char *line)
 
     for (char *s = strtok(line, " \t\r"); s; s = strtok(NULL, " \t\r")) {
         if (n == 5) {
-            puts("명령어 인자가 너무 많습니다.");
+            say(UI_OUT, "명령어 인자가 너무 많습니다.");
             return 0;
         }
         v[n++] = s;
@@ -773,22 +843,22 @@ static int run_command(worker_t *w, char *line)
 
     if (n == 2 && !strcmp(v[0], "manual")) {
         if (w->solo) show_manual(v[1]);
-        else puts("관제사 자료는 직원 콘솔에서 열람할 수 없습니다.");
+        else say(UI_OUT, "관제사 자료는 직원 콘솔에서 열람할 수 없습니다.");
         return 0;
     }
     if (n == 1 && !strcmp(v[0], "status")) {
         if (w->active != EV_NONE)
-            printf("남은 시간: %lld초\n", (long long)(w->deadline - now_ms() + 999) / 1000);
+            say(UI_OUT, "남은 시간: %lld초", (long long)(w->deadline - now_ms() + 999) / 1000);
         int fac = w->location;
         if (fac < 0 || fac >= FAC_COUNT || !w->mgr.fac[fac].has_last) {
-            puts("시설로 이동한 뒤 상태 보고를 기다리세요.");
+            say(UI_OUT, "시설로 이동한 뒤 상태 보고를 기다리세요.");
             return 0;
         }
         const fac_msg_t *m = &w->mgr.fac[fac].last;
         for (int i = 0; i < METRIC_COUNT; ++i)
-            printf("%s %.1f %s\n", metric_label(fac,i), m->metrics[i], metric_unit(fac,i));
+            say(UI_OUT, "%s %.1f %s", metric_label(fac,i), m->metrics[i], metric_unit(fac,i));
         if (fac == FAC_POWER)
-            printf("GN-2291-K %.1f kW, PUMP-B %.1f kW\n",
+            say(UI_OUT, "GN-2291-K %.1f kW, PUMP-B %.1f kW",
                    m->delivered_kw[0], m->delivered_kw[1]);
         return 0;
     }
@@ -796,7 +866,7 @@ static int run_command(worker_t *w, char *line)
         (!strcmp(v[2], "stop") || !strcmp(v[2], "kill")) && w->active == EV_NONE &&
         (events[w->step] == EV_C02 || events[w->step] == EV_G02)) {
         w->variant = !strcmp(v[2], "stop") ? PF_STOP : PF_KILL;
-        if (arm_next(w, 0) < 0) perror("이벤트 예약");
+        if (arm_next(w, 0) < 0) fail("이벤트 예약");
         w->variant = 0;
         return 0;
     }
@@ -805,13 +875,13 @@ static int run_command(worker_t *w, char *line)
 
     if (n == 2 && !strcmp(v[0], "go") && !strcmp(v[1], "cooling")) {
         w->location = FAC_COOLING;
-        puts("냉각실로 이동했습니다.");
+        say(UI_OUT, "냉각실로 이동했습니다.");
     } else if (n == 2 && !strcmp(v[0], "go") && !strcmp(v[1], "power")) {
         w->location = FAC_POWER;
-        puts("배전실로 이동했습니다.");
+        say(UI_OUT, "배전실로 이동했습니다.");
     } else if (n == 2 && !strcmp(v[0], "go") && !strcmp(v[1], "generator")) {
         w->location = FAC_GENERATOR;
-        puts("발전실로 이동했습니다.");
+        say(UI_OUT, "발전실로 이동했습니다.");
     } else if (w->location == FAC_GENERATOR && n == 2 && !strcmp(v[0], "stat") &&
                !strcmp(v[1], "temperature_sensor_link")) {
         show_sensor_link(GEN_LINK);
@@ -819,12 +889,12 @@ static int run_command(worker_t *w, char *line)
                !strcmp(v[1], "generator_config.cfg")) {
         struct stat st;
         if (stat(GEN_CFG, &st) < 0)
-            perror(GEN_CFG);
+            fail(GEN_CFG);
         else
-            printf("generator_config.cfg mode=%04o\n", (unsigned)(st.st_mode & 07777));
+            say(UI_OUT, "generator_config.cfg mode=%04o", (unsigned)(st.st_mode & 07777));
     } else if (n == 2 && !strcmp(v[0], "cat")) {
         if (!w->solo && strstr(v[1], ".cfg"))
-            puts("설정 파일 내용은 직원 콘솔에서 열람할 수 없습니다.");
+            say(UI_OUT, "설정 파일 내용은 직원 콘솔에서 열람할 수 없습니다.");
         else
             cat_file(w->location, v[1]);
     } else if (n == 2 && !strcmp(v[0], "stat") &&
@@ -832,22 +902,22 @@ static int run_command(worker_t *w, char *line)
         if (w->location == FAC_COOLING)
             show_sensor_link(SENSOR_LINK);
         else
-            puts("먼저 go cooling을 입력하세요.");
+            say(UI_OUT, "먼저 go cooling을 입력하세요.");
     } else if (n == 2 && !strcmp(v[1], "pump") &&
                ((w->solo && !strcmp(v[0], "repair")) || !strcmp(v[0], "resume") ||
                 !strcmp(v[0], "restart"))) {
         const fac_handle_t *cool = &w->mgr.fac[FAC_COOLING];
         if (w->active != EV_C02 || w->location != FAC_COOLING)
-            puts("냉각실에서 C02 진행 중에 수리하세요.");
+            say(UI_OUT, "냉각실에서 C02 진행 중에 수리하세요.");
         else if (w->pump_wait)
-            puts("C02 펌프의 RUNNING 보고를 기다립니다.");
+            say(UI_OUT, "C02 펌프의 RUNNING 보고를 기다립니다.");
         else if (w->pending)
-            puts("C02 수리 검증 결과를 기다립니다.");
+            say(UI_OUT, "C02 수리 검증 결과를 기다립니다.");
         else if (!cool->has_last || cool->last.event != EV_C02)
-            puts("C02 펌프 상태 조회 실패: 시설 보고를 기다리세요.");
+            say(UI_OUT, "C02 펌프 상태 조회 실패: 시설 보고를 기다리세요.");
         else if ((!strcmp(v[0], "resume") && cool->last.equip_state != EQ_STOPPED) ||
                  (!strcmp(v[0], "restart") && cool->last.equip_state != EQ_DEAD))
-            printf("현재 펌프 상태 %s에서는 해당 명령을 사용할 수 없습니다.\n",
+            say(UI_OUT, "현재 펌프 상태 %s에서는 해당 명령을 사용할 수 없습니다.",
                    equip_state_key(cool->last.equip_state));
         else
             recover_pump(w, cool->last.equip_state);
@@ -856,18 +926,18 @@ static int run_command(worker_t *w, char *line)
         const fac_handle_t *gen = &w->mgr.fac[FAC_GENERATOR];
         int restart = !strcmp(v[0], "restart");
         if (w->location != FAC_GENERATOR || (w->active != EV_G02 && w->active != EV_G03))
-            puts("발전실에서 G02 또는 G03 진행 중에 조작하세요.");
+            say(UI_OUT, "발전실에서 G02 또는 G03 진행 중에 조작하세요.");
         else if (w->pending || w->turbine_wait)
-            puts("시설 응답을 기다리는 중입니다.");
+            say(UI_OUT, "시설 응답을 기다리는 중입니다.");
         else if (!gen->has_last || gen->last.event != w->active ||
                  gen->last.equip_state != (restart ? EQ_DEAD : EQ_STOPPED))
-            puts("현재 터빈 상태로 조작할 수 없습니다.");
+            say(UI_OUT, "현재 터빈 상태로 조작할 수 없습니다.");
         else if ((restart ? fac_mgr_equip_restart(&w->mgr, FAC_GENERATOR)
                           : fac_mgr_equip_signal(&w->mgr, FAC_GENERATOR, SIGCONT)) < 0)
-            perror("터빈 조작");
+            fail("터빈 조작");
         else {
             w->turbine_wait = 1;
-            puts("터빈의 RUNNING 보고를 기다립니다.");
+            say(UI_OUT, "터빈의 RUNNING 보고를 기다립니다.");
         }
     } else if (n && !strcmp(v[0], "repair")) {
         repair(w, v, n);
@@ -876,29 +946,29 @@ static int run_command(worker_t *w, char *line)
         operate_breaker(w, !strcmp(v[0], "restart"));
     } else if (w->solo && n == 2 && !strcmp(v[0], "debug") && !strcmp(v[1], "status")) {
         if (w->active != EV_NONE)
-            printf("%s 진행 중%s\n", event_code(w->active),
+            say(UI_OUT, "%s 진행 중%s", event_code(w->active),
                    (w->pending || w->breaker_wait) ? " / 응답 대기 중" : "");
         else if (events[w->step] != EV_NONE)
-            printf("%s 발생 대기 중\n", event_code(events[w->step]));
+            say(UI_OUT, "%s 발생 대기 중", event_code(events[w->step]));
         else
-            puts("테스트 이벤트 모두 수리 완료");
+            say(UI_OUT, "테스트 이벤트 모두 수리 완료");
     } else if (w->solo && n == 2 && !strcmp(v[0], "debug") &&
                (!strcmp(v[1], "next") ||
                 (events[w->step] == EV_C01 && !strcmp(v[1], "c01")) ||
                 (events[w->step] == EV_C03 && !strcmp(v[1], "c03")))) {
         if (w->active != EV_NONE || events[w->step] == EV_NONE)
-            puts("지금 발생시킬 대기 이벤트가 없습니다.");
+            say(UI_OUT, "지금 발생시킬 대기 이벤트가 없습니다.");
         else if (arm_next(w, 0) < 0)
-            perror("이벤트 예약");
+            fail("이벤트 예약");
     } else {
-        puts("go cooling|power|generator / status / cat <파일> / quit");
+        say(UI_OUT, "go cooling|power|generator / status / cat <파일> / quit");
         if (w->location == FAC_GENERATOR)
-            puts("generator_label.txt generator_config.cfg generator_status.txt turbine_status.txt temp_sensor_a.dat temp_sensor_b.dat temperature_sensor_link\nstat temperature_sensor_link|generator_config.cfg / repair temperature_sensor FILE / repair generator_config <권한> / resume|restart turbine");
+            say(UI_OUT, "generator_label.txt generator_config.cfg generator_status.txt turbine_status.txt temp_sensor_a.dat temp_sensor_b.dat temperature_sensor_link\nstat temperature_sensor_link|generator_config.cfg / repair temperature_sensor FILE / repair generator_config <권한> / resume|restart turbine");
         if (w->location == FAC_COOLING)
-            puts("pump_label.txt pump_status.txt coolant_config.cfg coolant_level.txt cooling_sensor_a.dat cooling_sensor_b.dat\nstat cooling_sensor_link / repair cooling_sensor A|B / repair coolant_flow N / resume|restart pump");
+            say(UI_OUT, "pump_label.txt pump_status.txt coolant_config.cfg coolant_level.txt cooling_sensor_a.dat cooling_sensor_b.dat\nstat cooling_sensor_link / repair cooling_sensor A|B / repair coolant_flow N / resume|restart pump");
         if (w->location == FAC_POWER)
-            puts("circuit_label.txt circuit_status.txt load_status.txt breaker_status.txt power_config.cfg\nrepair circuit_load A B / repair fault_isolated <회로 ID> 0|1 / resume|restart breaker / repair power_split G C");
-        if (w->solo) puts("테스트 전용: manual index|registry|history|이벤트코드 / debug next [stop|kill]");
+            say(UI_OUT, "circuit_label.txt circuit_status.txt load_status.txt breaker_status.txt power_config.cfg\nrepair circuit_load A B / repair fault_isolated <회로 ID> 0|1 / resume|restart breaker / repair power_split G C");
+        if (w->solo) say(UI_OUT, "테스트 전용: manual index|registry|history|이벤트코드 / debug next [stop|kill]");
     }
     return 0;
 }
@@ -968,6 +1038,72 @@ static int prepare_session(char *session)
     return 0;
 }
 
+static void push_view(const worker_t *w)
+{
+    ui_view_t v;
+    int total[FAC_COUNT] = {0}, done[FAC_COUNT] = {0};
+
+    memset(&v, 0, sizeof v);
+    v.event = w->active;
+    v.location = w->location;
+    if (w->game_over) {
+        v.game_state = GS_GAME_OVER;
+    } else if (w->active != EV_NONE) {
+        v.game_state = GS_EVENT_ACTIVE;
+        v.limit_left_ms = w->deadline > now_ms() ? w->deadline - now_ms() : 0;
+    } else {
+        v.game_state = events[w->step] == EV_NONE ? GS_GAME_CLEAR : GS_NORMAL;
+    }
+    if (w->location >= 0)
+        snprintf(v.prompt, sizeof v.prompt, ROOT "/%s", facility_key(w->location));
+    else
+        snprintf(v.prompt, sizeof v.prompt, ROOT);
+
+    for (int i = 0; events[i] != EV_NONE; i++) {
+        int fac = event_facility(events[i]);
+        total[fac]++;
+        if (i < w->step)
+            done[fac]++;
+    }
+    for (int i = 0; i < FAC_COUNT; i++) {
+        const fac_handle_t *h = &w->mgr.fac[i];
+
+        v.fac[i].progress = total[i] ? done[i] * 100 / total[i] : 100;
+        v.fac[i].fault = w->active != EV_NONE && event_facility(w->active) == i;
+        if (h->has_last) {
+            memcpy(v.fac[i].metrics, h->last.metrics, sizeof v.fac[i].metrics);
+            v.fac[i].equip_pid = h->last.equip_pid;
+            v.fac[i].equip_state = h->last.equip_state;
+        } else {
+            for (int j = 0; j < METRIC_COUNT; j++)
+                v.fac[i].metrics[j] = NAN;
+        }
+    }
+    ui_update(&v);
+}
+
+/* 게임 오버 화면을 띄워 두고 아무 명령이나 Ctrl-D 를 기다린다 */
+static void hold_end_screen(const worker_t *w)
+{
+    char cmd[256];
+
+    say(UI_SYS, "quit: 종료");
+    while (!quitting) {
+        struct pollfd in = {STDIN_FILENO, POLLIN, 0};
+        ui_input_t r;
+
+        push_view(w);
+        ui_draw();
+        if (poll(&in, 1, 200) < 0 && errno != EINTR)
+            return;
+        while ((r = ui_handle_input(cmd, sizeof cmd)) != UI_IN_NONE)
+            if (r == UI_IN_LINE || r == UI_IN_QUIT)
+                return;
+        if (in.revents & (POLLHUP | POLLERR))
+            return;
+    }
+}
+
 int main(int argc, char **argv)
 {
     worker_t w = {.active = EV_NONE, .location = -1};
@@ -982,9 +1118,9 @@ int main(int argc, char **argv)
         fputs("usage: worker [--solo-test]\n", stderr);
         return EXIT_FAILURE;
     }
-    puts(w.solo ? "단독 테스트: help / manual index" : "직원 콘솔: help");
+    const char *banner = w.solo ? "단독 테스트: help / manual index" : "직원 콘솔: help";
     if (install_signals() < 0 || prepare_session(session) < 0 || fac_mgr_init(&w.mgr, ROOT) < 0) {
-        perror("호스트 초기화");
+        fail("호스트 초기화");
         result = EXIT_FAILURE;
         goto cleanup_session;
     }
@@ -997,23 +1133,26 @@ int main(int argc, char **argv)
         access(POWER_CFG, R_OK | W_OK) < 0 ||
         fac_mgr_spawn_all(&w.mgr) < 0 ||
         arm_next(&w, BACKTIME_MS) < 0) {
-        perror("시설 또는 현장 파일 초기화");
+        fail("시설 또는 현장 파일 초기화");
         result = EXIT_FAILURE;
         goto done;
     }
 
-    if (begin_input() < 0) {
-        perror("터미널 입력 설정");
+    /* 시설·설비 프로세스를 다 띄운 뒤 화면을 연다 */
+    ui_on = getenv("WORKER_PLAIN") == NULL && ui_init(ROLE_FIELD) == 0;
+    if (!ui_on && begin_input() < 0) {
+        fail("터미널 입력 설정");
         result = EXIT_FAILURE;
         goto done;
     }
+    say(UI_SYS, "%s", banner);
 
     while (!quitting) {
         struct pollfd fds[FAC_COUNT + 1] = {{STDIN_FILENO, POLLIN, 0}};
 
         int seconds = w.active == EV_NONE ? -1 :
             (int)((w.deadline - now_ms() + 999) / 1000);
-        if (prompt || (editing_tty && seconds != shown_seconds)) {
+        if (!ui_on && (prompt || (editing_tty && seconds != shown_seconds))) {
             draw_input(line, used, w.location, seconds);
             shown_seconds = seconds;
             prompt = 0;
@@ -1025,7 +1164,7 @@ int main(int argc, char **argv)
 
         int ready = poll(fds, FAC_COUNT + 1, 100);
         if (ready < 0 && errno != EINTR) {
-            perror("poll");
+            fail("poll");
             result = EXIT_FAILURE;
             break;
         }
@@ -1034,7 +1173,8 @@ int main(int argc, char **argv)
 
         if (w.active != EV_NONE && now_ms() >= w.deadline) {
             clear_input_line();
-            puts("\n수리 제한 시간 초과: 게임 오버");
+            say(UI_ERR, "\n수리 제한 시간 초과: 게임 오버");
+            w.game_over = 1;
             break;
         }
 
@@ -1057,11 +1197,32 @@ int main(int argc, char **argv)
             }
 
             if (r != FAC_NONE) {
-                fprintf(stderr, "\n%s 시설 보고 읽기 실패\n",
+                warn("\n%s 시설 보고 읽기 실패",
                         facility_name(i));
                 result = EXIT_FAILURE;
                 goto done;
             }
+        }
+
+        if (ui_on) {
+            char cmd[256];
+            ui_input_t in;
+
+            while ((in = ui_handle_input(cmd, sizeof cmd)) != UI_IN_NONE) {
+                if (in == UI_IN_QUIT)
+                    goto done;
+                if (w.active != EV_NONE && now_ms() >= w.deadline) {
+                    say(UI_ERR, "수리 제한 시간 초과: 게임 오버");
+                    w.game_over = 1;
+                    goto done;
+                }
+                if (run_command(&w, cmd))
+                    goto done;
+                push_view(&w);   /* go 로 바뀐 위치를 다음 줄 메아리에 반영 */
+            }
+            push_view(&w);
+            ui_draw();
+            continue;
         }
 
         if (ready <= 0)
@@ -1078,7 +1239,7 @@ int main(int argc, char **argv)
             if (n < 0) {
                 if (errno == EINTR)
                     continue;
-                perror("입력");
+                fail("입력");
                 result = EXIT_FAILURE;
                 break;
             }
@@ -1114,12 +1275,13 @@ int main(int argc, char **argv)
                     }
 
                     if (w.active != EV_NONE && now_ms() >= w.deadline) {
-                        puts("수리 제한 시간 초과: 게임 오버");
+                        say(UI_OUT, "수리 제한 시간 초과: 게임 오버");
+                        w.game_over = 1;
                         goto done;
                     }
 
                     if (overflow) {
-                        puts("명령어가 너무 깁니다.");
+                        say(UI_OUT, "명령어가 너무 깁니다.");
                     } else {
                         line[used] = '\0';
                         if (run_command(&w, line))
@@ -1155,16 +1317,25 @@ int main(int argc, char **argv)
     }
 
 done:
+    if (ui_on) {
+        if (w.game_over)
+            hold_end_screen(&w);
+        ui_shutdown();
+        ui_on = 0;
+        /* 화면이 닫히면 사라지므로, 실패로 끝났으면 마지막 오류를 터미널에 남긴다 */
+        if (result != EXIT_SUCCESS && last_error[0])
+            fprintf(stderr, "%s\n", last_error);
+    }
     if (editing_tty) {
         clear_input_line();
         fflush(stdout);
         if (tcsetattr(STDIN_FILENO, TCSANOW, &saved_tty) < 0)
-            perror("터미널 설정 복원");
+            fail("터미널 설정 복원");
     }
     fac_mgr_shutdown(&w.mgr);
 cleanup_session:
     if (session[0] && nftw(session, remove_session_file, 16, FTW_DEPTH | FTW_PHYS) < 0) {
-        perror("임시 현장 정리");
+        fail("임시 현장 정리");
         result = EXIT_FAILURE;
     }
     return result;
