@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "game_state.h"
+#include "timeutil.h"
 
 // ==========================================
 // 1. 문자열 복사 보조 함수
@@ -185,6 +186,8 @@ int game_state_apply(
             sizeof(state->event_facility), facility
         );
         state->repair_limit = (int)limit;
+        // 호스트가 남은 시간을 따로 보내지 않으므로 받은 순간부터 센다
+        state->event_deadline_ms = now_ms() + limit * 1000;
 
         return 1;
     }
@@ -290,4 +293,15 @@ void game_state_print(const GameState *state) {
     }
 
     printf("\n");
+}
+
+// ==========================================
+// 남은 수리 시간
+// ==========================================
+int64_t game_state_time_left_ms(const GameState *state) {
+    if (state == NULL || !state->event_active)
+        return 0;
+
+    int64_t left = state->event_deadline_ms - now_ms();
+    return left > 0 ? left : 0;
 }
