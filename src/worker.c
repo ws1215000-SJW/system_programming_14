@@ -36,7 +36,6 @@
 #define SENSOR_B "cooling_sensor_b.dat"
 
 #define BACKTIME_MS 10000
-#define REPAIR_MS 40000
 
 static const int events[] = {
     EV_C01, EV_C02, EV_C03, EV_P01, EV_P02, EV_P03,
@@ -82,7 +81,7 @@ static void clear_input_line(void)
         fputs("\r\033[2K", stdout);
 }
 
-static void draw_input(const char *line, size_t used, int location)
+static void draw_input(const char *line, size_t used, int location, int seconds)
 {
     const char *prompt = location == FAC_GENERATOR ? "발전실 직원> " : "발전소 직원> ";
     if (editing_tty) {
@@ -97,6 +96,8 @@ static void draw_input(const char *line, size_t used, int location)
         }
 
         clear_input_line();
+        if (seconds >= 0)
+            printf("[%02d:%02d] ", seconds / 60, seconds % 60);
         fputs(prompt, stdout);
         fwrite(line + start, 1, used - start, stdout);
     } else {
@@ -319,7 +320,7 @@ static void request_verify(worker_t *w)
     }
     if (!r.ok) {
         w->recovering = 0;
-        printf("추가 조작 필요: %s\n", r.detail);
+        puts("추가 조작 필요: 현재 설정으로 검증에 실패했습니다.");
         return;
     }
     /* A cached reading can predate the configuration write. Wait for the
@@ -333,7 +334,7 @@ static void request_verify(worker_t *w)
         char state[32];
         if (kv_get(POWER "circuit_status.txt", "circuit_a", state, sizeof state) ||
             strcmp(state, "isolated")) {
-            puts("추가 조작 필요: CR-A1 격리");
+            puts("추가 조작 필요: 현재 회로 상태로 검증에 실패했습니다.");
             w->recovering = 0;
             return;
         }
@@ -382,6 +383,8 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
     int event = msg->event;
 
     w->reported_at[fac] = now_ms();
+    if (w->active != EV_NONE && w->deadline && w->reported_at[fac] >= w->deadline)
+        return 0;
     if (w->recovering && msg->type == FMSG_STATUS && fac == event_facility(w->active) && event == w->active)
         request_verify(w);
 
@@ -397,11 +400,11 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
             return -1;
         fac_mgr_pause_others(&w->mgr, fac);
         w->active = event;
-        w->deadline = now_ms() + REPAIR_MS;
+        w->deadline = w->reported_at[fac] + REPAIR_LIMIT_MS;
 
         clear_input_line();
         printf("\n%s 발생: %s (제한 %d초)\n",
-               event_code(event), event_title(event), REPAIR_MS / 1000);
+               event_code(event), event_title(event), REPAIR_LIMIT_MS / 1000);
         if (event == EV_G02 || event == EV_G03)
             printf("터빈 상태: %s\n", equip_state_key(msg->equip_state));
         puts("현장 조사: 해당 시설로 이동해 help, status, cat 명령을 사용하세요.");
@@ -428,7 +431,7 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         }
         if (msg->type == FMSG_EQUIP && msg->equip_state == EQ_DEAD) {
             clear_input_line();
-            puts(msg->detail);
+            puts("터빈 조작 실패");
             w->turbine_wait = 0;
             return 1;
         }
@@ -449,7 +452,7 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         clear_input_line();
 
         if (!msg->verify_ok) {
-            printf("\n%s 수리 미완료: %s\n", event_code(event), msg->detail);
+            printf("\n%s 수리 미완료\n", event_code(event));
             return 1;
         }
 
@@ -586,14 +589,17 @@ static void repair(worker_t *w, char *v[], int n)
 {
     int a, b, expected;
 
-    if (n == 2 && !strcmp(v[1], "generator_config")) {
+    if (n >= 2 && !strcmp(v[1], "generator_config")) {
+        if (n != 3 || strlen(v[2]) != 4 || v[2][0] != '0' ||
+            strspn(v[2], "01234567") != 4)
+            goto usage;
         if (w->location != FAC_GENERATOR || w->active != EV_G03 ||
             w->pending || w->turbine_wait)
             puts("발전실에서 G03 수리 중에 사용하세요.");
-        else if (set_generator_mode(0640) < 0)
+        else if (set_generator_mode((mode_t)strtol(v[2], NULL, 8)) < 0)
             perror(GEN_CFG);
         else {
-            puts("권한 복구 완료, 터빈 재실행 필요");
+            puts("입력한 권한을 적용했습니다.");
         }
         return;
     }
@@ -664,16 +670,16 @@ static void repair(worker_t *w, char *v[], int n)
         break;
 
     case EV_P02:
-        if ((n != 3 && n != 4) || !number(v[n - 1], 1, &a))
+        if (n != 4 || !number(v[n - 1], 1, &a))
             goto usage;
-        if (n == 4 && strcmp(v[2], "CR-A1")) {
+        if (strcmp(v[2], "CR-A1")) {
             puts("추가 조작 필요: 지정한 회로가 고장 회로와 다릅니다.");
             return;
         }
         if (set_number(POWER_CFG, "fault_isolated", a) < 0 ||
             kv_set(POWER "circuit_status.txt", "circuit_a", a ? "isolated" : "fault") < 0)
             return;
-        puts(a ? "고장 회로를 격리했습니다. 차단기를 조작하세요."
+        puts(a ? "회로를 격리했습니다."
                : "고장 회로 격리를 해제했습니다.");
         return;
 
@@ -693,9 +699,9 @@ static void repair(worker_t *w, char *v[], int n)
     return;
 
 usage:
-    puts("repair temperature_sensor <temp_sensor_a.dat|temp_sensor_b.dat> | repair generator_config");
+    puts("repair temperature_sensor <temp_sensor_a.dat|temp_sensor_b.dat> | repair generator_config <권한>");
     puts("사용법: repair coolant_flow <0~100> | cooling_sensor <A|B>");
-    puts("        repair circuit_load <A> <B> | fault_isolated [회로 ID] <0|1>");
+    puts("        repair circuit_load <A> <B> | fault_isolated <회로 ID> <0|1>");
     puts("        repair power_split <발전실> <냉각실>");
 }
 
@@ -713,7 +719,7 @@ static void operate_breaker(worker_t *w, int restart)
     }
     if (kv_get_double(POWER_CFG, "fault_isolated", &isolated) < 0 ||
         isolated != 1.0) {
-        puts("먼저 고장 회로를 격리하세요.");
+        puts("현재 회로 상태로 조작할 수 없습니다.");
         return;
     }
 
@@ -765,18 +771,14 @@ static int run_command(worker_t *w, char *line)
         v[n++] = s;
     }
 
-    if (n == 2 && !strcmp(v[0], "test") &&
-        (!strcmp(v[1], "on") || !strcmp(v[1], "off"))) {
-        w->solo = !strcmp(v[1], "on");
-        puts(w->solo ? "테스트 도구 켜짐" : "테스트 도구 꺼짐");
-        return 0;
-    }
     if (n == 2 && !strcmp(v[0], "manual")) {
         if (w->solo) show_manual(v[1]);
         else puts("관제사 자료는 직원 콘솔에서 열람할 수 없습니다.");
         return 0;
     }
     if (n == 1 && !strcmp(v[0], "status")) {
+        if (w->active != EV_NONE)
+            printf("남은 시간: %lld초\n", (long long)(w->deadline - now_ms() + 999) / 1000);
         int fac = w->location;
         if (fac < 0 || fac >= FAC_COUNT || !w->mgr.fac[fac].has_last) {
             puts("시설로 이동한 뒤 상태 보고를 기다리세요.");
@@ -786,8 +788,8 @@ static int run_command(worker_t *w, char *line)
         for (int i = 0; i < METRIC_COUNT; ++i)
             printf("%s %.1f %s\n", metric_label(fac,i), m->metrics[i], metric_unit(fac,i));
         if (fac == FAC_POWER)
-            printf("GN-2291-K %.1f / %d kW, PUMP-B %.1f / %d kW\n",
-                   m->delivered_kw[0], GEN_LIMIT_KW, m->delivered_kw[1], COOL_LIMIT_KW);
+            printf("GN-2291-K %.1f kW, PUMP-B %.1f kW\n",
+                   m->delivered_kw[0], m->delivered_kw[1]);
         return 0;
     }
     if (n == 3 && w->solo && !strcmp(v[0], "debug") && !strcmp(v[1], "next") &&
@@ -821,7 +823,10 @@ static int run_command(worker_t *w, char *line)
         else
             printf("generator_config.cfg mode=%04o\n", (unsigned)(st.st_mode & 07777));
     } else if (n == 2 && !strcmp(v[0], "cat")) {
-        cat_file(w->location, v[1]);
+        if (!w->solo && strstr(v[1], ".cfg"))
+            puts("설정 파일 내용은 직원 콘솔에서 열람할 수 없습니다.");
+        else
+            cat_file(w->location, v[1]);
     } else if (n == 2 && !strcmp(v[0], "stat") &&
                !strcmp(v[1], "cooling_sensor_link")) {
         if (w->location == FAC_COOLING)
@@ -829,7 +834,7 @@ static int run_command(worker_t *w, char *line)
         else
             puts("먼저 go cooling을 입력하세요.");
     } else if (n == 2 && !strcmp(v[1], "pump") &&
-               (!strcmp(v[0], "repair") || !strcmp(v[0], "resume") ||
+               ((w->solo && !strcmp(v[0], "repair")) || !strcmp(v[0], "resume") ||
                 !strcmp(v[0], "restart"))) {
         const fac_handle_t *cool = &w->mgr.fac[FAC_COOLING];
         if (w->active != EV_C02 || w->location != FAC_COOLING)
@@ -856,7 +861,7 @@ static int run_command(worker_t *w, char *line)
             puts("시설 응답을 기다리는 중입니다.");
         else if (!gen->has_last || gen->last.event != w->active ||
                  gen->last.equip_state != (restart ? EQ_DEAD : EQ_STOPPED))
-            puts("터빈 상태를 확인하세요. STOPPED: resume turbine / DEAD: restart turbine");
+            puts("현재 터빈 상태로 조작할 수 없습니다.");
         else if ((restart ? fac_mgr_equip_restart(&w->mgr, FAC_GENERATOR)
                           : fac_mgr_equip_signal(&w->mgr, FAC_GENERATOR, SIGCONT)) < 0)
             perror("터빈 조작");
@@ -869,7 +874,7 @@ static int run_command(worker_t *w, char *line)
     } else if (n == 2 && !strcmp(v[1], "breaker") &&
                (!strcmp(v[0], "resume") || !strcmp(v[0], "restart"))) {
         operate_breaker(w, !strcmp(v[0], "restart"));
-    } else if (n == 2 && !strcmp(v[0], "debug") && !strcmp(v[1], "status")) {
+    } else if (w->solo && n == 2 && !strcmp(v[0], "debug") && !strcmp(v[1], "status")) {
         if (w->active != EV_NONE)
             printf("%s 진행 중%s\n", event_code(w->active),
                    (w->pending || w->breaker_wait) ? " / 응답 대기 중" : "");
@@ -888,12 +893,11 @@ static int run_command(worker_t *w, char *line)
     } else {
         puts("go cooling|power|generator / status / cat <파일> / quit");
         if (w->location == FAC_GENERATOR)
-            puts("generator_label.txt generator_config.cfg generator_status.txt turbine_status.txt temp_sensor_a.dat temp_sensor_b.dat temperature_sensor_link\nstat temperature_sensor_link|generator_config.cfg / repair temperature_sensor FILE / repair generator_config / resume|restart turbine");
+            puts("generator_label.txt generator_config.cfg generator_status.txt turbine_status.txt temp_sensor_a.dat temp_sensor_b.dat temperature_sensor_link\nstat temperature_sensor_link|generator_config.cfg / repair temperature_sensor FILE / repair generator_config <권한> / resume|restart turbine");
         if (w->location == FAC_COOLING)
-            puts("pump_label.txt pump_status.txt coolant_config.cfg coolant_level.txt cooling_sensor_a.dat cooling_sensor_b.dat\nstat cooling_sensor_link / repair cooling_sensor A|B / repair coolant_flow N / repair|resume|restart pump");
+            puts("pump_label.txt pump_status.txt coolant_config.cfg coolant_level.txt cooling_sensor_a.dat cooling_sensor_b.dat\nstat cooling_sensor_link / repair cooling_sensor A|B / repair coolant_flow N / resume|restart pump");
         if (w->location == FAC_POWER)
-            puts("circuit_label.txt circuit_status.txt load_status.txt breaker_status.txt power_config.cfg\nrepair circuit_load A B / repair fault_isolated 0|1 / resume|restart breaker / repair power_split G C");
-        puts("개발 테스트 도구: test on / test off");
+            puts("circuit_label.txt circuit_status.txt load_status.txt breaker_status.txt power_config.cfg\nrepair circuit_load A B / repair fault_isolated <회로 ID> 0|1 / resume|restart breaker / repair power_split G C");
         if (w->solo) puts("테스트 전용: manual index|registry|history|이벤트코드 / debug next [stop|kill]");
     }
     return 0;
@@ -971,6 +975,7 @@ int main(int argc, char **argv)
     char line[128];
     size_t used = 0;
     int overflow = 0, escape = 0, prompt = 1, result = EXIT_SUCCESS;
+    int shown_seconds = -1;
 
     w.solo = argc == 2 && !strcmp(argv[1], "--solo-test");
     if (argc != 1 && !w.solo) {
@@ -1006,8 +1011,11 @@ int main(int argc, char **argv)
     while (!quitting) {
         struct pollfd fds[FAC_COUNT + 1] = {{STDIN_FILENO, POLLIN, 0}};
 
-        if (prompt) {
-            draw_input(line, used, w.location);
+        int seconds = w.active == EV_NONE ? -1 :
+            (int)((w.deadline - now_ms() + 999) / 1000);
+        if (prompt || (editing_tty && seconds != shown_seconds)) {
+            draw_input(line, used, w.location, seconds);
+            shown_seconds = seconds;
             prompt = 0;
         }
         for (int i = 0; i < FAC_COUNT; i++) {
@@ -1101,7 +1109,7 @@ int main(int argc, char **argv)
 
                 if (c == '\n' || (editing_tty && c == '\r')) {
                     if (editing_tty) {
-                        draw_input(line, used, w.location);
+                        draw_input(line, used, w.location, seconds);
                         putchar('\n');
                     }
 
