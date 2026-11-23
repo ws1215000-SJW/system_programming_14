@@ -3,3 +3,7 @@ equip
 demo
 demo_plant/
 *.o
+
+# Runtime sensor links created by worker
+/plant/cooling/cooling_sensor_link
+/plant/generator/temperature_sensor_link

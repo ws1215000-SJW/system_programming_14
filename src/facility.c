@@ -43,6 +43,7 @@ typedef struct {
     float    metrics[METRIC_COUNT];
     int      metrics_init;
     float    coolant_flow;   /* 냉각실: 설정 파일의 목표 유량 */
+    float delivered_kw[2];
     unsigned rng;
 } facility_t;
 
@@ -139,6 +140,18 @@ static void update_metrics(facility_t *f)
         else
             f->metrics[i] += (tgt[i] - f->metrics[i]) * 0.5f;
     }
+    if (f->fac == FAC_POWER) {
+        char path[PATH_MAX];
+        const char *keys[] = {"supply_generator", "supply_cooling"};
+        snprintf(path, sizeof path, "%s/power/power_config.cfg", f->root);
+        for (int i = 0; i < 2; ++i) {
+            double share;
+            float target = kv_get_double(path, keys[i], &share) == 0
+                         ? f->metrics[1] * share / 100.0 : 0;
+            f->delivered_kw[i] = f->metrics_init
+                ? (f->delivered_kw[i] + target) * 0.5f : target;
+        }
+    }
     f->metrics_init = 1;
 }
 
@@ -163,6 +176,7 @@ static void fill_msg(facility_t *f, fac_msg_t *m, int type)
     m->equip_pid = (int32_t)f->equip.pid;
     m->equip_state = f->equip.state;
     m->repairs = f->repairs;
+    memcpy(m->delivered_kw, f->delivered_kw, sizeof m->delivered_kw);
 
     compute_targets(f, tgt, amp);
     for (i = 0; i < METRIC_COUNT; i++) {
@@ -190,6 +204,14 @@ static void send_status(facility_t *f)
 
     update_metrics(f);
     fill_msg(f, &m, FMSG_STATUS);
+    if (f->fac == FAC_GENERATOR || f->fac == FAC_COOLING) {
+        int gen = f->fac == FAC_GENERATOR;
+        char path[PATH_MAX], value[32];
+        snprintf(path, sizeof path, "%s/%s", f->root, gen
+                 ? "generator/generator_status.txt" : "cooling/coolant_level.txt");
+        snprintf(value, sizeof value, "%.1f", m.metrics[gen ? 1 : 2]);
+        kv_set(path, gen ? "output" : "current_flow", value);
+    }
     (void)fac_write_msg(f->msg_fd, &m);
 }
 

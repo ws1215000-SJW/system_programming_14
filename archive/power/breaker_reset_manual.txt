@@ -12,6 +12,8 @@ before restarting the breaker.
 
 Required Configuration:
 fault_isolated=1
+Identify the fault in circuit_status.txt and look up its ID in circuit_label.txt.
+Command: repair fault_isolated <circuit ID> 1
 
 [STEP 1]
 Check the power configuration.

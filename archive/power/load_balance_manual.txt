@@ -12,6 +12,13 @@ supply_cooling=60
 
 Total Supply: 100
 
+Commissioning limits (kW)
+Bus nominal: 5200. Minimum: 4700 (low supply warning).
+Maximum: 5460 (5% above nominal).
+GN-2291-K branch, 40%: 1880 to 2184 kW.
+PUMP-B branch, 60%: 2820 to 3276 kW.
+Check measured branch deliveries after the split has settled.
+
 [RECOVERY]
 1. Check the current power distribution.
 2. Set generator supply to 40.

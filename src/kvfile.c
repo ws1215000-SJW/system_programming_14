@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <math.h>
 #include <unistd.h>
 
 /* 파일 전체를 buf 에 읽는다 (최대 cap-1 바이트, NUL 로 끝냄). 읽은 길이, 실패 -1. */
@@ -17,6 +19,10 @@ static ssize_t read_all(const char *path, char *buf, size_t cap)
 
     if (fd < 0)
         return -1;
+    if (flock(fd, LOCK_SH) < 0) {
+        close(fd);
+        return -1;
+    }
     while (len < cap - 1) {
         ssize_t n = read(fd, buf + len, cap - 1 - len);
         if (n > 0) {
@@ -108,7 +114,7 @@ int kv_get_double(const char *path, const char *key, double *out)
     d = strtod(val, &endp);
     while (*endp != '\0' && isspace((unsigned char)*endp))
         endp++;
-    if (errno != 0 || *endp != '\0')
+    if (errno != 0 || *endp != '\0' || !isfinite(d))
         return -1;
     *out = d;
     return 0;
@@ -154,9 +160,13 @@ int kv_set(const char *path, const char *key, const char *value)
     }
 
     /* 같은 inode 에 덮어쓴다 (rename 을 쓰면 권한과 링크가 바뀐다) */
-    fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC);
+    fd = open(path, O_WRONLY | O_CLOEXEC);
     if (fd < 0)
         return -1;
+    if (flock(fd, LOCK_EX) < 0 || ftruncate(fd, 0) < 0) {
+        close(fd);
+        return -1;
+    }
     while (off < olen) {
         ssize_t w = write(fd, out + off, olen - off);
         if (w < 0 && errno == EINTR)

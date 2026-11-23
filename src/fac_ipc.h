@@ -65,6 +65,7 @@ typedef struct {
     int32_t  verify_ok;            /* FMSG_VERIFY: 1 성공, 0 실패 */
     int32_t  verify_failed;        /* FMSG_VERIFY: 통과하지 못한 검사 (check_kind_t), 성공이면 0 */
     float    metrics[METRIC_COUNT];/* metric_label 순서. NaN 은 수신 불가 */
+    float    delivered_kw[2];       /* 발전실, 냉각실 실제 분기 공급량 */
     char     detail[FAC_DETAIL_MAX];/* VERIFY 실패 사유, EQUIP 설명 (UTF-8, NUL 로 끝남) */
 } fac_msg_t;
 

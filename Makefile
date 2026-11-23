@@ -1,5 +1,5 @@
 # 발전소 복구 시뮬레이션 - 시설 프로세스와 화면
-#   make        : equip(설비 프로세스), demo(화면 + 시설 프로세스 시연)
+#   make        : equip(설비 프로세스), demo(화면 + 시설 프로세스 시연), worker(직원 콘솔)
 #   make test   : tests/test_*.c 를 빌드해 실행 (ncurses 없이 돈다)
 #   make clean
 CC      := gcc
@@ -18,10 +18,13 @@ TEST_SRCS := $(wildcard tests/test_*.c)
 TEST_BINS := $(TEST_SRCS:tests/%.c=$(BUILD)/tests/%)
 
 .PHONY: all test clean
-all: equip demo
+all: equip demo worker
 
 equip: $(BUILD)/equip_main.o $(BUILD)/equipment.o
 	$(CC) $(CFLAGS) -o $@ $^
+
+worker: $(BUILD)/worker.o $(FAC_OBJS) | equip
+	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 demo: $(BUILD)/tools/demo.o $(BUILD)/tools/fixture.o $(sort $(FAC_OBJS) $(UI_OBJS))
 	$(CC) $(CFLAGS) -o $@ $^ $(UI_LIBS) -lm
@@ -34,6 +37,8 @@ $(BUILD)/tools/%.o: tools/%.c $(HEADERS) | $(BUILD)/tools
 
 $(BUILD)/tests/%: tests/%.c $(BUILD)/tools/fixture.o $(FAC_OBJS) $(HEADERS) | $(BUILD)/tests
 	$(CC) $(CFLAGS) -Itests -o $@ $< $(BUILD)/tools/fixture.o $(FAC_OBJS) -lm
+
+$(BUILD)/tests/test_worker_c02: src/worker.c
 
 $(BUILD) $(BUILD)/tools $(BUILD)/tests:
 	mkdir -p $@
@@ -50,4 +55,4 @@ test: equip $(TEST_BINS)
 	echo "ALL TESTS PASSED"
 
 clean:
-	rm -rf $(BUILD) equip demo demo_plant
+	rm -rf $(BUILD) equip demo worker demo_plant
