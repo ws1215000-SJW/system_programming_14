@@ -167,11 +167,6 @@ static void handle_server_message(
 
     // STATE|시설|key=value...
     if (strncmp(message, "STATE|", 6) == 0) {
-        ui_print(
-            UI_SYS,
-            "시설 상태 갱신: %s",
-            message + 6
-        );
         return;
     }
 
