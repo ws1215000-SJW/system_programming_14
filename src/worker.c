@@ -22,6 +22,7 @@
 #include "kvfile.h"
 #include "timeutil.h"
 #include "ui.h"
+#include "host_net.h"  /* WORKER_TCP_INTEGRATED_V1 */
 
 #define ROOT "plant"
 #define COOL ROOT "/cooling/"
@@ -437,6 +438,95 @@ static void recover_pump(worker_t *w, int state)
     say(UI_OUT, "C02 복구 요청 완료. 시설의 RUNNING 보고를 기다립니다.");
 }
 
+
+/* -------------------- worker <-> control TCP bridge -------------------- */
+static int run_command(worker_t *w, char *line);
+static host_net_t net_server;
+static worker_t *net_worker;
+static int net_started;
+static long long net_last_sync_ms;
+
+static void net_sendf(const char *fmt, ...)
+{
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    if (n >= 0 && n < (int)sizeof msg && host_net_connected(&net_server))
+        (void)host_net_send(&net_server, msg);
+}
+
+static int net_progress(const worker_t *w, int fac)
+{
+    int total = 0, done = 0;
+    for (int i = 0; events[i] != EV_NONE; ++i) {
+        if (event_facility(events[i]) != fac) continue;
+        ++total;
+        if (i < w->step) ++done;
+    }
+    return total ? done * 100 / total : 100;
+}
+
+static void net_sync_state(const worker_t *w)
+{
+    if (!host_net_connected(&net_server)) return;
+    for (int i = 0; i < FAC_COUNT; ++i) {
+        const fac_handle_t *h = &w->mgr.fac[i];
+        if (!h->has_last) {
+            net_sendf("STATE|%s|recovery=%d", facility_key(i), net_progress(w, i));
+            continue;
+        }
+        /* Key names exactly match client/ui_adapter.c. */
+        net_sendf("STATE|%s|recovery=%d|metric0=%.2f|metric1=%.2f|metric2=%.2f|metric3=%.2f",
+                  facility_key(i), net_progress(w, i),
+                  h->last.metrics[0], h->last.metrics[1],
+                  h->last.metrics[2], h->last.metrics[3]);
+    }
+}
+
+static void net_sync_event(const worker_t *w)
+{
+    if (w->active == EV_NONE) return;
+    int64_t remain = w->deadline - now_ms();
+    if (remain < 0) remain = 0;
+    net_sendf("EVENT_START|%s|%s|%lld", event_code(w->active),
+              facility_key(event_facility(w->active)),
+              (long long)((remain + 999) / 1000));
+}
+
+static void net_on_message(const char *msg, void *ctx)
+{
+    worker_t *w = ctx;
+    if (strcmp(msg, "HELLO|CONTROL") == 0) {
+        net_sendf("HELLO|FIELD");
+        net_sync_state(w);
+        net_sync_event(w);
+    } else if (strcmp(msg, "READY|CONTROL") == 0) {
+        net_server.ready = 1;
+        net_sendf("READY|FIELD");
+        say(UI_OK, "관제사 준비 완료");
+    } else if (strncmp(msg, "CHAT|CONTROL|", 13) == 0) {
+        if (ui_on) ui_chat(ROLE_CONTROL, msg + 13);
+        else say(UI_OUT, "[관제사] %s", msg + 13);
+    } else {
+        say(UI_ERR, "관제사 미지원 메시지: %.80s", msg);
+    }
+}
+
+static int net_worker_command(worker_t *w, char *line)
+{
+    if (strncmp(line, "say ", 4) == 0 && line[4]) {
+        const char *msg = line + 4;
+        if (ui_on) ui_chat(ROLE_FIELD, msg);
+        else say(UI_OUT, "[현장 직원] %s", msg);
+        net_sendf("CHAT|FIELD|%s", msg);
+        return 0;
+    }
+    return run_command(w, line);
+}
+/* -------------------- end TCP bridge -------------------- */
+
 /* -1: 오류, 0: 프롬프트 유지, 1: 프롬프트 다시 표시 */
 static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
 {
@@ -468,6 +558,7 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         if (event == EV_G02 || event == EV_G03)
             say(UI_OUT, "터빈 상태: %s", equip_state_key(msg->equip_state));
         say(UI_OUT, "현장 조사: 해당 시설로 이동해 help, status, cat 명령을 사용하세요.");
+        net_sync_event(w);
         return 1;
     }
 
@@ -517,11 +608,13 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
         }
 
         say(UI_OK, "\n%s 수리 완료", event_code(event));
+        net_sendf("EVENT_END|%s|SUCCESS", event_code(event));
         if ((event == EV_C01 && fac_mgr_link(&w->mgr, FAC_GENERATOR, 0) < 0) ||
             (event == EV_P01 && fac_mgr_link(&w->mgr, FAC_COOLING, 0) < 0))
             return -1;
         w->active = EV_NONE;
         w->step++;
+        net_sync_state(w);
         fac_mgr_resume_others(&w->mgr, fac);
 
         if (arm_next(w, BACKTIME_MS) < 0) {
@@ -532,8 +625,10 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
             fail("다음 이벤트 예약");
             return -1;
         }
-        if (events[w->step] == EV_NONE)
+        if (events[w->step] == EV_NONE) {
             say(UI_OK, "냉각실·배전실·발전실 이벤트를 모두 수리했습니다.");
+            net_sendf("GAME_END|CLEAR");
+        }
         return 1;
     }
     return 0;
@@ -1079,6 +1174,7 @@ static void push_view(const worker_t *w)
                 v.fac[i].metrics[j] = NAN;
         }
     }
+    v.peer_connected = host_net_connected(&net_server);
     ui_update(&v);
 }
 
@@ -1146,9 +1242,17 @@ int main(int argc, char **argv)
         goto done;
     }
     say(UI_SYS, "%s", banner);
+    net_worker = &w;
+    if (host_net_start(&net_server, 12345) < 0) {
+        fail("관제사 TCP 서버 (12345) 시작");
+        result = EXIT_FAILURE;
+        goto done;
+    }
+    net_started = 1;
+    say(UI_SYS, "관제사 TCP 서버 대기: 127.0.0.1:12345");
 
     while (!quitting) {
-        struct pollfd fds[FAC_COUNT + 1] = {{STDIN_FILENO, POLLIN, 0}};
+        struct pollfd fds[FAC_COUNT + 3] = {{STDIN_FILENO, POLLIN, 0}};
 
         int seconds = w.active == EV_NONE ? -1 :
             (int)((w.deadline - now_ms() + 999) / 1000);
@@ -1162,7 +1266,12 @@ int main(int argc, char **argv)
             fds[i + 1].events = POLLIN;
         }
 
-        int ready = poll(fds, FAC_COUNT + 1, 100);
+        const int listen_ix = FAC_COUNT + 1, peer_ix = FAC_COUNT + 2;
+        fds[listen_ix].fd = host_net_listener_fd(&net_server);
+        fds[listen_ix].events = POLLIN;
+        fds[peer_ix].fd = host_net_peer_fd(&net_server);
+        fds[peer_ix].events = host_net_peer_events(&net_server);
+        int ready = poll(fds, FAC_COUNT + 3, 100);
         if (ready < 0 && errno != EINTR) {
             fail("poll");
             result = EXIT_FAILURE;
@@ -1170,11 +1279,25 @@ int main(int argc, char **argv)
         }
         if (quitting)
             break;
+        if (fds[listen_ix].revents & POLLIN) {
+            int was_connected = host_net_connected(&net_server);
+            host_net_accept(&net_server);
+            if (!was_connected && host_net_connected(&net_server))
+                say(UI_OK, "관제사 연결됨");
+        }
+        host_net_io(&net_server, fds[peer_ix].revents, net_on_message, net_worker);
+        if (host_net_connected(&net_server) && now_ms() - net_last_sync_ms >= 1000) {
+            net_sync_state(&w);
+            net_last_sync_ms = now_ms();
+        }
+        host_net_io(&net_server, 0, net_on_message, net_worker);
 
         if (w.active != EV_NONE && now_ms() >= w.deadline) {
             clear_input_line();
             say(UI_ERR, "\n수리 제한 시간 초과: 게임 오버");
             w.game_over = 1;
+            net_sendf("GAME_END|OVER");
+            host_net_io(&net_server, 0, net_on_message, net_worker);
             break;
         }
 
@@ -1216,7 +1339,7 @@ int main(int argc, char **argv)
                     w.game_over = 1;
                     goto done;
                 }
-                if (run_command(&w, cmd))
+                if (net_worker_command(&w, cmd))
                     goto done;
                 push_view(&w);   /* go 로 바뀐 위치를 다음 줄 메아리에 반영 */
             }
@@ -1284,7 +1407,7 @@ int main(int argc, char **argv)
                         say(UI_OUT, "명령어가 너무 깁니다.");
                     } else {
                         line[used] = '\0';
-                        if (run_command(&w, line))
+                        if (net_worker_command(&w, line))
                             goto done;
                     }
 
@@ -1317,6 +1440,10 @@ int main(int argc, char **argv)
     }
 
 done:
+    if (net_started) {
+        host_net_io(&net_server, 0, net_on_message, net_worker);
+        host_net_close(&net_server);
+    }
     if (ui_on) {
         if (w.game_over)
             hold_end_screen(&w);
