@@ -1,4 +1,4 @@
 # breaker_status.txt
 breaker_id=BK-7
-pid=
-state=
+pid=32358
+state=DEAD

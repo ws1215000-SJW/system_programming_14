@@ -25,3 +25,9 @@ Equipment: GN-2291-K
 Action: Generator controller update
 Config Mode: 0640
 Status: ACTIVE
+
+[2026-03-02]
+Equipment: GT-480 temperature sensor
+Action: Replace TS-A (retired) with TS-B
+Current sensor: TS-B
+Status: ACTIVE
