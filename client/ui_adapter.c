@@ -230,10 +230,8 @@ void ui_adapter_build(
             }
         }
 
-        // 현재 GameState에는 이벤트 발생 시각이나
-        // 실시간 남은 시간이 저장되어 있지 않음.
-        // 잘못된 카운트다운을 표시하지 않도록 0으로 둠.
-        view->limit_left_ms = 0;
+        view->limit_left_ms =
+            game_state_time_left_ms(state);
     }
 
     // 이벤트 수리 성공
