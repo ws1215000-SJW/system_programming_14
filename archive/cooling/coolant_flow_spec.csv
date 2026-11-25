@@ -1,3 +1,15 @@
-pump_id,target_flow
-PUMP-A,50
-PUMP-B,70
+# Coolant flow setpoints (L/s), oldest row first.
+# The row with an empty valid_to is the one in force.
+pump_id,model,target_flow,valid_from,valid_to,basis
+PUMP-A,CP-50,50,2024-03-12,2025-06-18,commissioning
+PUMP-B,CP-70,40,2025-06-18,2025-06-25,run-in period
+PUMP-B,CP-70,70,2025-06-25,2026-04-07,rated flow
+PUMP-B,CP-70,80,2026-04-07,2026-04-09,peak trial (withdrawn)
+PUMP-B,CP-70,70,2026-04-09,,rated flow restored
+#
+# Field check:  cat pump_label.txt      (installed pump_id)
+#               cat coolant_config.cfg  (present setpoint)
+#               status                  (measured flow)
+# Field repair: repair coolant_flow <target_flow>
+# Only the setpoint in force passes verification.
+# Low flow also heats the generator; that clears by itself.
