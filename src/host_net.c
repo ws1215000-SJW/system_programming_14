@@ -30,7 +30,7 @@ int host_net_start(host_net_t *n, uint16_t port) {
     struct sockaddr_in a = {0};
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); /* same-WSL test only */
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); /* local control client */
     if (nonblock(fd) < 0 || bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0 ||
         listen(fd, 1) < 0) {
         int saved = errno;

@@ -16,7 +16,7 @@
 /*
  * 이벤트별 검사 표.
  * 파일 이름은 기획서 5.1 을 따랐고, 키 이름과 정답 값은 현장 파일 내용과 맞춰야 한다.
- * 현장 파일을 바꾸면 여기와 tools/fixture.c 만 같이 고치면 된다.
+ * 현장 파일을 바꾸면 아래 판정 기준도 함께 확인한다.
  */
 #define GEN_CFG   "generator/generator_config.cfg"
 #define GEN_LINK  "generator/temperature_sensor_link"
