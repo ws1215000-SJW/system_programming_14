@@ -1,7 +1,5 @@
 build/
 equip
-demo
-demo_plant/
 *.o
 
 # Runtime sensor links created by worker

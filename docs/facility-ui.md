@@ -11,14 +11,16 @@
 
 ```sh
 sudo apt install build-essential libncurses-dev
-make                    # equip, demo, worker
-./worker --solo-test    # 발전소 직원 콘솔 (터미널이면 ncurses 화면)
-make test               # ncurses 없이 도는 테스트
-./demo field --fast     # 발전소 직원 화면 + 실제 시설 프로세스
-./demo control --fast   # 관제사 화면
+make                    # equip, worker
+./worker    # 발전소 직원 콘솔 (터미널이면 ncurses 화면)
 ```
 
-`demo` 는 두 모듈을 눈으로 확인하는 시연 프로그램이다. 게임 진행과 명령은 흉내만 낸 것이고, 현장 파일은 `tools/fixture.c` 가 `demo_plant/` 에 임시로 만든다. `start` 로 시작하고, 이벤트가 나면 `fix`, `resume <설비>`, `restart <설비>` 로 고쳐 볼 수 있다.
+관제사는 같은 Linux 또는 WSL 환경에서 두 번째 터미널을 열고 저장소 루트에서 실행한다. 직원 콘솔이 먼저 실행 중이어야 한다.
+
+```sh
+gcc -Isrc client/*.c src/ui.c src/timeutil.c -lncursesw -lm -o control_client
+./control_client
+```
 
 ## 파일
 
@@ -32,7 +34,6 @@ make test               # ncurses 없이 도는 테스트
 | `src/kvfile.[ch]` | `key=value` 파일 읽기와 한 줄 고치기 | `open` `read` `write` |
 | `src/fac_mgr.[ch]` | 호스트가 시설 세 개를 다루는 도우미 | `pipe` `fork` `kill` `waitpid` `fcntl` |
 | `src/ui.[ch]` | 두 역할의 화면 | ncursesw, `ioctl(TIOCGWINSZ)` |
-| `tools/demo.c`, `tools/fixture.[ch]` | 시연 프로그램, 임시 현장 파일 | `select` `symlink` `chmod` `utimensat` |
 
 ## 시설 프로세스
 
@@ -65,7 +66,7 @@ make test               # ncurses 없이 도는 테스트
 | P02 | 차단기 제어 정지 | `power_config.cfg` 의 `fault_isolated` | `fault_isolated=1`, 차단기 제어 프로세스 가동 |
 | P03 | | `power_config.cfg` 의 `supply_generator`, `supply_cooling` | 40 과 60, 합 100 |
 
-- 키 이름과 정답 값은 저장소의 `plant/` 파일과 `src/worker.c` 가 넣는 고장 값에 맞춰져 있다. 바꿀 때는 `src/repair_check.c` 맨 위의 표와 `tools/fixture.c` 를 같이 고친다.
+- 키 이름과 정답 값은 저장소의 `plant/` 파일과 `src/worker.c` 가 넣는 고장 값에 맞춰져 있다. 바꿀 때는 `src/repair_check.c` 맨 위의 표도 같이 고친다.
 - 냉각실의 유량 수치는 `coolant_config.cfg` 의 `target_flow` 를 따라간다. 직원이 `repair coolant_flow <값>` 으로 바꾸면 관제사 화면의 유량·온도·효율이 같이 움직인다.
 - `generator_config.cfg` 에 소유자 읽기 권한이 없으면 터빈 제어 프로세스 재실행이 거부된다. G03 에서는 권한을 먼저 고쳐야 한다.
 - 링크는 상대 경로든 절대 경로든 같은 파일을 가리키면 통과한다.
@@ -116,21 +117,6 @@ fac_mgr_shutdown(&m);
 - 재실행이나 `SIGCONT` 직후에 바로 확인을 요청해도 순서가 지켜진다.
 - 연계 고장은 `fac_mgr_link(&m, 영향받는_시설, 0..10)` 으로 그 시설의 수치를 나쁘게 만든다.
 - 발전실 이벤트는 호스트가 냉각실·배전실 복구를 확인한 뒤 `fac_mgr_arm(&m, FAC_GENERATOR, EV_G03, ...)` 으로 시작한다. 백 타임 0 이면 바로 터진다.
-- 실제로 돌아가는 예는 `tools/demo.c` 와 `tests/test_facility.c` 에 있다.
-
-### `src/worker.c` 에서 바꿀 곳
-
-지금 `worker.c` 는 시설 프로세스가 없어서 테스트 타이머와 `c01_active` 변수로 돈다. 붙일 때는 이렇게 바뀐다.
-
-| 지금 | 붙인 뒤 |
-|---|---|
-| `backtime_end` 타이머로 C01 발생 | `fac_mgr_arm(&m, FAC_COOLING, EV_C01, ...)` 뒤 `FMSG_EVENT` 를 받으면 `start_c01()` |
-| `flow == C01_NORMAL_FLOW` 로 해소 판정 | `repair` 뒤 `fac_mgr_request_verify()`, `FMSG_VERIFY` 의 `verify_ok` 로 판정 |
-| `select()` 에 표준 입력만 | 보고 파이프 세 개(`fac_mgr_fd`)를 함께 |
-| `printf` / `fgets` | `ui_print` / `ui_handle_input` |
-
-`save_value()` 는 파일을 한 줄로 덮어쓴다. 설정 파일에 키가 여러 개 생기면 (`power_config.cfg`) 다른 줄이 지워지므로 그때는 `kv_set()` 을 쓰면 된다.
-
 ## 화면
 
 | | 발전소 직원 | 관제사 |

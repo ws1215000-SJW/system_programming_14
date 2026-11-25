@@ -49,7 +49,7 @@ static const int events[] = {
 typedef struct {
     fac_mgr_t mgr;
     int step, active, location, pending, breaker_wait;
-    int pump_wait, turbine_wait, recovering, solo, variant;
+    int pump_wait, turbine_wait, recovering;
     int64_t reported_at[FAC_COUNT];
     int64_t deadline;
     int game_over;
@@ -300,7 +300,7 @@ static int arm_next(worker_t *w, int delay)
 
     if (event == EV_NONE)
         return 0;
-    return fac_mgr_arm(&w->mgr, event_facility(event), event, delay, w->variant);
+    return fac_mgr_arm(&w->mgr, event_facility(event), event, delay, 0);
 }
 
 static void send_verify(worker_t *w)
@@ -619,7 +619,7 @@ static int handle_report(worker_t *w, int fac, const fac_msg_t *msg)
 
         if (arm_next(w, BACKTIME_MS) < 0) {
             if (events[w->step] == EV_C02) {
-                fail("C02 예약 실패 (debug next로 재시도)");
+                fail("C02 예약 실패");
                 return 1;
             }
             fail("다음 이벤트 예약");
@@ -864,10 +864,7 @@ static void repair(worker_t *w, char *v[], int n)
     return;
 
 usage:
-    say(UI_OUT, "repair temperature_sensor <temp_sensor_a.dat|temp_sensor_b.dat> | repair generator_config <권한>");
-    say(UI_OUT, "사용법: repair coolant_flow <0~100> | cooling_sensor <A|B>");
-    say(UI_OUT, "        repair circuit_load <A> <B> | fault_isolated <회로 ID> <0|1>");
-    say(UI_OUT, "        repair power_split <발전실> <냉각실>");
+    say(UI_OUT, "사용법: repair <항목> <값...>");
 }
 
 static void operate_breaker(worker_t *w, int restart)
@@ -901,26 +898,21 @@ static void operate_breaker(worker_t *w, int restart)
                  : "차단기 재개를 요청했습니다.");
 }
 
-static void show_manual(const char *topic)
+static void show_help(void)
 {
-    static const struct { const char *topic, *path; } catalog[] = {
-        {"index", "common/error_code_index.txt"}, {"registry", "common/equipment_registry.csv"},
-        {"history", "common/maintenance_history.log"}, {"G01", "generator/sensor_link_map.csv"},
-        {"G02", "generator/turbine_restart_guide.txt"}, {"G03", "generator/generator_config_manual.txt"},
-        {"C01", "cooling/coolant_flow_spec.csv"}, {"C02", "cooling/pump_process_manual.txt"},
-        {"C03", "cooling/cooling_sensor_history.log"}, {"P01", "power/power_distribution_map.csv"},
-        {"P02", "power/breaker_reset_manual.txt"}, {"P03", "power/load_balance_manual.txt"}
-    };
-    for (size_t i = 0; i < sizeof catalog / sizeof catalog[0]; i++) {
-        if (!strcmp(topic, catalog[i].topic)) {
-            char path[PATH_MAX];
-            snprintf(path, sizeof path, "archive/%s", catalog[i].path);
-            show_file(path);
-            if (!strcmp(topic, "G03")) show_file("archive/restricted/generator_restart_guide.txt");
-            return;
-        }
-    }
-    say(UI_OUT, "manual index|registry|history|이벤트코드");
+    say(UI_OUT, "[안내]");
+    say(UI_OUT, "help → 명령어 안내를 표시합니다 → help");
+    say(UI_OUT, "status → 현재 시설의 상태를 확인합니다 → status");
+    say(UI_OUT, "[이동]");
+    say(UI_OUT, "go <cooling|power|generator> → 시설로 이동합니다 → go power");
+    say(UI_OUT, "[통신]");
+    say(UI_OUT, "say <메시지> → 관제사에게 메시지를 보냅니다 → say 이동 중");
+    say(UI_OUT, "[설비 조작]");
+    say(UI_OUT, "repair <항목> <값...> → 현장 설정을 조정합니다 → repair circuit_load 60 60");
+    say(UI_OUT, "resume <설비> → 정지된 설비를 재개합니다 → resume pump");
+    say(UI_OUT, "restart <설비> → 종료된 설비를 재시작합니다 → restart pump");
+    say(UI_OUT, "[종료]");
+    say(UI_OUT, "quit → 직원 콘솔을 종료합니다 → quit");
 }
 
 static int run_command(worker_t *w, char *line)
@@ -936,9 +928,12 @@ static int run_command(worker_t *w, char *line)
         v[n++] = s;
     }
 
+    if (n == 1 && !strcmp(v[0], "help")) {
+        show_help();
+        return 0;
+    }
     if (n == 2 && !strcmp(v[0], "manual")) {
-        if (w->solo) show_manual(v[1]);
-        else say(UI_OUT, "관제사 자료는 직원 콘솔에서 열람할 수 없습니다.");
+        say(UI_OUT, "관제사 자료는 직원 콘솔에서 열람할 수 없습니다.");
         return 0;
     }
     if (n == 1 && !strcmp(v[0], "status")) {
@@ -955,14 +950,6 @@ static int run_command(worker_t *w, char *line)
         if (fac == FAC_POWER)
             say(UI_OUT, "GN-2291-K %.1f kW, PUMP-B %.1f kW",
                    m->delivered_kw[0], m->delivered_kw[1]);
-        return 0;
-    }
-    if (n == 3 && w->solo && !strcmp(v[0], "debug") && !strcmp(v[1], "next") &&
-        (!strcmp(v[2], "stop") || !strcmp(v[2], "kill")) && w->active == EV_NONE &&
-        (events[w->step] == EV_C02 || events[w->step] == EV_G02)) {
-        w->variant = !strcmp(v[2], "stop") ? PF_STOP : PF_KILL;
-        if (arm_next(w, 0) < 0) fail("이벤트 예약");
-        w->variant = 0;
         return 0;
     }
     if (n == 1 && !strcmp(v[0], "quit"))
@@ -988,7 +975,7 @@ static int run_command(worker_t *w, char *line)
         else
             say(UI_OUT, "generator_config.cfg mode=%04o", (unsigned)(st.st_mode & 07777));
     } else if (n == 2 && !strcmp(v[0], "cat")) {
-        if (!w->solo && strstr(v[1], ".cfg"))
+        if (strstr(v[1], ".cfg"))
             say(UI_OUT, "설정 파일 내용은 직원 콘솔에서 열람할 수 없습니다.");
         else
             cat_file(w->location, v[1]);
@@ -999,7 +986,7 @@ static int run_command(worker_t *w, char *line)
         else
             say(UI_OUT, "먼저 go cooling을 입력하세요.");
     } else if (n == 2 && !strcmp(v[1], "pump") &&
-               ((w->solo && !strcmp(v[0], "repair")) || !strcmp(v[0], "resume") ||
+               (!strcmp(v[0], "resume") ||
                 !strcmp(v[0], "restart"))) {
         const fac_handle_t *cool = &w->mgr.fac[FAC_COOLING];
         if (w->active != EV_C02 || w->location != FAC_COOLING)
@@ -1039,31 +1026,8 @@ static int run_command(worker_t *w, char *line)
     } else if (n == 2 && !strcmp(v[1], "breaker") &&
                (!strcmp(v[0], "resume") || !strcmp(v[0], "restart"))) {
         operate_breaker(w, !strcmp(v[0], "restart"));
-    } else if (w->solo && n == 2 && !strcmp(v[0], "debug") && !strcmp(v[1], "status")) {
-        if (w->active != EV_NONE)
-            say(UI_OUT, "%s 진행 중%s", event_code(w->active),
-                   (w->pending || w->breaker_wait) ? " / 응답 대기 중" : "");
-        else if (events[w->step] != EV_NONE)
-            say(UI_OUT, "%s 발생 대기 중", event_code(events[w->step]));
-        else
-            say(UI_OUT, "테스트 이벤트 모두 수리 완료");
-    } else if (w->solo && n == 2 && !strcmp(v[0], "debug") &&
-               (!strcmp(v[1], "next") ||
-                (events[w->step] == EV_C01 && !strcmp(v[1], "c01")) ||
-                (events[w->step] == EV_C03 && !strcmp(v[1], "c03")))) {
-        if (w->active != EV_NONE || events[w->step] == EV_NONE)
-            say(UI_OUT, "지금 발생시킬 대기 이벤트가 없습니다.");
-        else if (arm_next(w, 0) < 0)
-            fail("이벤트 예약");
     } else {
-        say(UI_OUT, "go cooling|power|generator / status / cat <파일> / quit");
-        if (w->location == FAC_GENERATOR)
-            say(UI_OUT, "generator_label.txt generator_config.cfg generator_status.txt turbine_status.txt temp_sensor_a.dat temp_sensor_b.dat temperature_sensor_link\nstat temperature_sensor_link|generator_config.cfg / repair temperature_sensor FILE / repair generator_config <권한> / resume|restart turbine");
-        if (w->location == FAC_COOLING)
-            say(UI_OUT, "pump_label.txt pump_status.txt coolant_config.cfg coolant_level.txt cooling_sensor_a.dat cooling_sensor_b.dat\nstat cooling_sensor_link / repair cooling_sensor A|B / repair coolant_flow N / resume|restart pump");
-        if (w->location == FAC_POWER)
-            say(UI_OUT, "circuit_label.txt circuit_status.txt load_status.txt breaker_status.txt power_config.cfg\nrepair circuit_load A B / repair fault_isolated <회로 ID> 0|1 / resume|restart breaker / repair power_split G C");
-        if (w->solo) say(UI_OUT, "테스트 전용: manual index|registry|history|이벤트코드 / debug next [stop|kill]");
+        say(UI_OUT, "알 수 없는 명령입니다. help를 입력하세요.");
     }
     return 0;
 }
@@ -1209,12 +1173,12 @@ int main(int argc, char **argv)
     int overflow = 0, escape = 0, prompt = 1, result = EXIT_SUCCESS;
     int shown_seconds = -1;
 
-    w.solo = argc == 2 && !strcmp(argv[1], "--solo-test");
-    if (argc != 1 && !w.solo) {
-        fputs("usage: worker [--solo-test]\n", stderr);
+    (void)argv;
+    if (argc != 1) {
+        fputs("usage: worker\n", stderr);
         return EXIT_FAILURE;
     }
-    const char *banner = w.solo ? "단독 테스트: help / manual index" : "직원 콘솔: help";
+    const char *banner = "직원 콘솔: help";
     if (install_signals() < 0 || prepare_session(session) < 0 || fac_mgr_init(&w.mgr, ROOT) < 0) {
         fail("호스트 초기화");
         result = EXIT_FAILURE;
