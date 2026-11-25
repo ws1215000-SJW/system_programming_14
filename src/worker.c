@@ -193,7 +193,7 @@ static int set_number(const char *path, const char *key, int number)
 
     snprintf(value, sizeof value, "%d", number);
     if (kv_set(path, key, value) < 0) {
-        fail(path);
+        fail("현장 파일 작업");
         return -1;
     }
     return 0;
@@ -256,14 +256,16 @@ static int relink_sensor(const char *path, const char *target)
 static int set_generator_mode(mode_t mode)
 {
     struct stat st;
+    if (lstat(GEN_CFG, &st) < 0) return -1;
+    if (!S_ISREG(st.st_mode)) { errno = EINVAL; return -1; }
     if (chmod(GEN_CFG, mode) < 0 || stat(GEN_CFG, &st) < 0)
         return -1;
     mode_t actual = st.st_mode & 07777;
     if (actual == mode)
         return 0;
-    warn("%s 권한 변경 실패: 요청 %04o, 실제 %04o. "
+    warn("권한 변경 실패: 요청 %04o, 실제 %04o. "
          "Linux 권한을 지원하는 파일시스템(예: WSL 홈)에 프로젝트를 복사해 실행하세요.",
-            GEN_CFG, (unsigned)mode, (unsigned)actual);
+            (unsigned)mode, (unsigned)actual);
     errno = ENOTSUP;
     return -1;
 }
@@ -642,99 +644,101 @@ static void show_file(const char *path)
     int ch;
 
     if (!f) {
-        fail(path);
+        fail("현장 파일 작업");
         return;
     }
     if (flock(fileno(f), LOCK_SH) < 0) {
-        fail(path);
+        fail("현장 파일 작업");
         fclose(f);
         return;
     }
     FILE *mem = open_memstream(&text, &len);
     if (!mem) {
-        fail(path);
+        fail("현장 파일 작업");
         fclose(f);
         return;
     }
     while ((ch = fgetc(f)) != EOF)
         fputc(ch, mem);
     if (ferror(f))
-        fail(path);
+        fail("현장 파일 작업");
     fclose(f);
     fclose(mem);
     if (len > 0 && text[len - 1] == '\n')
         text[--len] = '\0';
-    if (len > 0)
-        say(UI_OUT, "%s", text);
+    if (len > 0) {
+        const char *body = text;
+        const char *base = strrchr(path, '/') + 1;
+        size_t header = strcspn(text, "\r\n");
+        if (header == strlen(base) + 2 && !strncmp(text, "# ", 2) &&
+            !strncmp(text + 2, base, strlen(base)))
+            body += header + strspn(text + header, "\r\n");
+        if (*body) say(UI_OUT, "%s", body);
+    }
     free(text);
 }
 
-static void cat_file(int location, const char *name)
+static const char *const field_files[FAC_COUNT][8] = {
+    [FAC_GENERATOR] = { GEN_CFG, GEN "generator_label.txt", GEN "generator_status.txt",
+        GEN "turbine_status.txt", GEN TEMP_A, GEN TEMP_B, GEN_LINK },
+    [FAC_COOLING] = { FLOW_CFG, FLOW_LEVEL, COOL "pump_label.txt", COOL "pump_status.txt",
+        COOL SENSOR_A, COOL SENSOR_B, SENSOR_LINK },
+    [FAC_POWER] = { POWER_CFG, POWER "circuit_label.txt", POWER "circuit_status.txt",
+        POWER "breaker_status.txt", POWER "load_status.txt" }
+};
+
+static void inspect_file(int fac, const char *command, const char *name)
 {
-    const char *path = NULL;
-
-    static const char *const files[] = {
-        GEN_CFG, GEN "generator_label.txt", GEN "generator_status.txt",
-        GEN "turbine_status.txt", GEN TEMP_A, GEN TEMP_B, GEN_LINK
-    };
-    if (location == FAC_GENERATOR) {
-        for (size_t i = 0; i < sizeof files / sizeof files[0]; i++)
-            if (!strcmp(name, strrchr(files[i], '/') + 1))
-                path = files[i];
-    } else if (location == FAC_COOLING) {
-        if (!strcmp(name, "pump_status.txt")) path = COOL "pump_status.txt";
-        else if (!strcmp(name, SENSOR_A)) path = COOL SENSOR_A;
-        else if (!strcmp(name, SENSOR_B)) path = COOL SENSOR_B;
-        else if (!strcmp(name, "pump_label.txt"))
-            path = COOL "pump_label.txt";
-        else if (!strcmp(name, "coolant_config.cfg"))
-            path = FLOW_CFG;
-        else if (!strcmp(name, "coolant_level.txt"))
-            path = FLOW_LEVEL;
-    } else if (location == FAC_POWER) {
-        if (!strcmp(name, "circuit_status.txt")) path = POWER "circuit_status.txt";
-        else if (!strcmp(name, "load_status.txt")) path = POWER "load_status.txt";
-        else if (!strcmp(name, "power_config.cfg"))
-            path = POWER_CFG;
-        else if (!strcmp(name, "breaker_status.txt"))
-            path = POWER "breaker_status.txt";
-        else if (!strcmp(name, "circuit_label.txt"))
-            path = POWER "circuit_label.txt";
-    }
-
-    if (path && strstr(name, ".dat")) {
-        struct stat st;
-        if (!stat(path, &st))
-            say(UI_OUT, "mtime=%lld (%lld초 전)", (long long)st.st_mtime,
-                   (long long)(time(NULL) - st.st_mtime));
-    }
-    if (path && !strcmp(path, GEN_LINK)) {
-        char target[128];
-        ssize_t n = readlink(path, target, sizeof target - 1);
-        path = NULL;
-        if (n >= 0) {
-            target[n] = 0;
-            if (!strcmp(target, TEMP_A)) path = GEN TEMP_A;
-            if (!strcmp(target, TEMP_B)) path = GEN TEMP_B;
-        }
-    }
-    if (path)
-        show_file(path);
-    else
-        say(UI_OUT, "현재 위치에서 열람할 수 없는 파일입니다.");
-}
-
-static void show_sensor_link(const char *path)
-{
-    char target[256];
-    ssize_t n = readlink(path, target, sizeof target - 1);
-
-    if (n < 0) {
-        fail(path);
+    if (fac < 0 || fac >= FAC_COUNT) {
+        say(UI_OUT, "먼저 시설로 이동하세요.");
         return;
     }
-    target[n] = '\0';
-    say(UI_OUT, "%s -> %s", strrchr(path, '/') + 1, target);
+    for (const char *const *p = field_files[fac]; *p; ++p) {
+        const char *path = *p;
+        const char *base = strrchr(path, '/') + 1;
+        struct stat st;
+        if (strcmp(name, base)) continue;
+        if (lstat(path, &st) < 0) {
+            fail("현장 파일 조사");
+            return;
+        }
+        int meta = !strcmp(command, "stat");
+        if (meta)
+            say(UI_OUT, "%s mode=%04o mtime=%lld", S_ISLNK(st.st_mode) ? "링크" : "일반 파일",
+                (unsigned)(st.st_mode & 07777), (long long)st.st_mtime);
+        if (S_ISLNK(st.st_mode)) {
+            char target[256];
+            ssize_t n = readlink(path, target, sizeof target - 1);
+            if (n < 0) { fail(base); return; }
+            target[n] = 0;
+            if (!strcmp(path, GEN_LINK) && !strcmp(target, TEMP_A)) path = GEN TEMP_A;
+            else if (!strcmp(path, GEN_LINK) && !strcmp(target, TEMP_B)) path = GEN TEMP_B;
+            else if (!strcmp(path, SENSOR_LINK) && !strcmp(target, SENSOR_A)) path = COOL SENSOR_A;
+            else if (!strcmp(path, SENSOR_LINK) && !strcmp(target, SENSOR_B)) path = COOL SENSOR_B;
+            else { say(UI_ERR, "연결된 센서를 식별할 수 없습니다."); return; }
+            if (meta) {
+                char id[64];
+                if (lstat(path, &st) == 0 && S_ISREG(st.st_mode) &&
+                    kv_get(path, "sensor_id", id, sizeof id) == 0)
+                    say(UI_OUT, "센서 ID: %s", id);
+                else
+                    say(UI_ERR, "연결된 센서를 식별할 수 없습니다.");
+                return;
+            }
+        }
+        if (!meta) {
+            if (lstat(path, &st) < 0 || !S_ISREG(st.st_mode)) {
+                say(UI_ERR, "현장 파일을 읽을 수 없습니다.");
+                return;
+            }
+            if (strstr(path, ".dat"))
+                say(UI_OUT, "mtime=%lld (%lld초 전)", (long long)st.st_mtime,
+                    (long long)(time(NULL) - st.st_mtime));
+            show_file(path);
+        }
+        return;
+    }
+    say(UI_ERR, "현재 위치에서 조사할 수 없는 파일입니다.");
 }
 
 static int number(const char *str, int max, int *out)
@@ -750,22 +754,56 @@ static int number(const char *str, int max, int *out)
     return 1;
 }
 
+static void sensor_command(worker_t *w, const char *name, const char *target)
+{
+    int gen = w->active == EV_G01 && w->location == FAC_GENERATOR;
+    if ((!gen && !(w->active == EV_C03 && w->location == FAC_COOLING)) || w->pending) {
+        say(UI_ERR, "해당 센서 고장이 진행 중인 시설에서 사용하세요.");
+        return;
+    }
+    const char *path = gen ? GEN_LINK : SENSOR_LINK;
+    if (strcmp(name, strrchr(path, '/') + 1) ||
+        (target && strcmp(target, gen ? TEMP_A : SENSOR_A) &&
+                   strcmp(target, gen ? TEMP_B : SENSOR_B))) {
+        say(UI_ERR, "현재 시설의 센서 파일과 링크 이름을 확인하세요.");
+        return;
+    }
+    if (target) {
+        if (symlink(target, path) < 0) { fail(name); return; }
+        say(UI_OUT, "센서 링크를 연결했습니다.");
+        request_verify(w);
+    } else {
+        struct stat st;
+        if (lstat(path, &st) < 0) { fail(name); return; }
+        if (!S_ISLNK(st.st_mode)) { say(UI_ERR, "링크만 제거할 수 있습니다."); return; }
+        if (unlink(path) < 0) { fail(name); return; }
+        w->recovering = 0;
+        say(UI_OUT, "%s 링크를 제거했습니다.", name);
+    }
+}
+
+static void change_mode(worker_t *w, const char *mode)
+{
+    size_t len = strlen(mode);
+    if ((len != 3 && !(len == 4 && mode[0] == '0')) || strspn(mode, "01234567") != len)
+        say(UI_ERR, "권한은 3자리 8진수 또는 앞에 0을 붙인 형식으로 입력하세요.");
+    else if (w->location != FAC_GENERATOR || w->active != EV_G03 ||
+             w->pending || w->turbine_wait)
+        say(UI_ERR, "발전실에서 G03 수리 중에 사용하세요.");
+    else if (set_generator_mode((mode_t)strtol(mode, NULL, 8)) < 0)
+        fail("설정 권한 변경");
+    else
+        say(UI_OUT, "입력한 권한을 적용했습니다.");
+}
+
 static void repair(worker_t *w, char *v[], int n)
 {
     int a, b, expected;
 
     if (n >= 2 && !strcmp(v[1], "generator_config")) {
-        if (n != 3 || strlen(v[2]) != 4 || v[2][0] != '0' ||
-            strspn(v[2], "01234567") != 4)
+        if (n != 3)
             goto usage;
-        if (w->location != FAC_GENERATOR || w->active != EV_G03 ||
-            w->pending || w->turbine_wait)
-            say(UI_OUT, "발전실에서 G03 수리 중에 사용하세요.");
-        else if (set_generator_mode((mode_t)strtol(v[2], NULL, 8)) < 0)
-            fail(GEN_CFG);
-        else {
-            say(UI_OUT, "입력한 권한을 적용했습니다.");
-        }
+        change_mode(w, v[2]);
         return;
     }
     if (n < 3)
@@ -801,10 +839,10 @@ static void repair(worker_t *w, char *v[], int n)
         if (n != 3 || (strcmp(v[2], TEMP_A) && strcmp(v[2], TEMP_B)))
             goto usage;
         if (relink_sensor(GEN_LINK, v[2]) < 0) {
-            fail(GEN_LINK);
+            fail("센서 링크 변경");
             return;
         }
-        show_sensor_link(GEN_LINK);
+        say(UI_OUT, "센서 링크를 연결했습니다.");
         break;
     case EV_C01:
         if (n != 3 || !number(v[2], 100, &a))
@@ -820,7 +858,7 @@ static void repair(worker_t *w, char *v[], int n)
         if (n != 3 || (strcmp(v[2], "A") && strcmp(v[2], "B")))
             goto usage;
         if (relink_sensor(SENSOR_LINK, !strcmp(v[2], "A") ? SENSOR_A : SENSOR_B) < 0) {
-            fail(SENSOR_LINK);
+            fail("센서 링크 변경");
             return;
         }
         say(UI_OUT, "연결한 센서: %s", v[2]);
@@ -898,17 +936,66 @@ static void operate_breaker(worker_t *w, int restart)
                  : "차단기 재개를 요청했습니다.");
 }
 
+static void list_event_files(const worker_t *w)
+{
+    if (w->active == EV_NONE) {
+        say(UI_OUT, "진행 중인 이벤트가 없습니다.");
+        return;
+    }
+    if (w->location != event_facility(w->active)) {
+        say(UI_OUT, "이벤트가 발생한 시설에서 조사하세요.");
+        return;
+    }
+    /* Discovery only: inspect_file also accepts names supplied by control. */
+    switch (w->active) {
+    case EV_C01:
+        say(UI_OUT, "pump_label.txt");
+        say(UI_OUT, "coolant_config.cfg");
+        break;
+    case EV_C03: say(UI_OUT, "cooling_sensor_link"); break;
+    case EV_G01: say(UI_OUT, "temperature_sensor_link"); break;
+    case EV_G03: say(UI_OUT, "generator_label.txt"); break;
+    case EV_P01:
+        say(UI_OUT, "circuit_label.txt");
+        say(UI_OUT, "load_status.txt");
+        break;
+    case EV_P02:
+        say(UI_OUT, "breaker_status.txt");
+        say(UI_OUT, "circuit_label.txt");
+        say(UI_OUT, "circuit_status.txt");
+        break;
+    case EV_G02:
+    case EV_C02:
+        say(UI_OUT, "ps로 설비 상태를 확인하세요.");
+        break;
+    case EV_P03:
+        say(UI_OUT, "status로 분기별 전력을 확인하세요.");
+        break;
+    }
+}
+
 static void show_help(void)
 {
     say(UI_OUT, "[안내]");
-    say(UI_OUT, "help → 명령어 안내를 표시합니다 → help");
-    say(UI_OUT, "status → 현재 시설의 상태를 확인합니다 → status");
-    say(UI_OUT, "[이동]");
-    say(UI_OUT, "go <cooling|power|generator> → 시설로 이동합니다 → go power");
+    say(UI_OUT, "help → 명령어 안내를 봅니다.");
+    say(UI_OUT, "go <cooling|power|generator> → 지정한 시설로 이동합니다.");
+    say(UI_OUT, "[현장 조사]");
+    say(UI_OUT, "status → 현재 시설의 계측값을 봅니다.");
+    say(UI_OUT, "ls → 인자 없이 현재 시설의 진행 중인 이벤트에서 조사할 파일명을 봅니다.");
+    say(UI_OUT, "cat <파일> → 알고 있는 현장 파일명을 입력해 내용과 단서를 읽습니다.");
+    say(UI_OUT, "stat <파일> → 권한·수정 시각·링크 여부를 봅니다. 센서 링크면 센서 ID도 표시합니다.");
+    say(UI_OUT, "ps → 인자 없이 현재 설비의 PID와 상태를 봅니다. STOPPED는 정지, DEAD는 종료입니다.");
     say(UI_OUT, "[통신]");
     say(UI_OUT, "say <메시지> → 관제사에게 메시지를 보냅니다 → say 이동 중");
     say(UI_OUT, "[설비 조작]");
-    say(UI_OUT, "repair <항목> <값...> → 현장 설정을 조정합니다 → repair circuit_load 60 60");
+    say(UI_OUT, "rm <링크> → 센서 고장 시 지정한 링크만 제거합니다. 센서 원본은 보존됩니다.");
+    say(UI_OUT, "ln <센서 파일> <링크> → 센서 고장 시 첫 인자를 가리키는 링크를 둘째 이름으로 만듭니다. 기존 링크는 먼저 제거하세요.");
+    say(UI_OUT, "chmod <모드> <파일> → 권한 복구 시 지정한 파일의 권한을 8진수 모드로 바꿉니다.");
+    say(UI_OUT, "repair <항목> <값...> → 현장 설정을 조정합니다.");
+    say(UI_OUT, "repair coolant_flow <유량> → 목표 유량을 설정합니다.");
+    say(UI_OUT, "repair circuit_load <A> <B> → 두 회로의 부하를 설정합니다.");
+    say(UI_OUT, "repair fault_isolated <회로 ID> <0|1> → 회로 격리를 해제하거나 적용합니다.");
+    say(UI_OUT, "repair power_split <발전> <냉각> → 두 시설의 전력 배분을 설정합니다.");
     say(UI_OUT, "resume <설비> → 정지된 설비를 재개합니다 → resume pump");
     say(UI_OUT, "restart <설비> → 종료된 설비를 재시작합니다 → restart pump");
     say(UI_OUT, "[종료]");
@@ -930,6 +1017,11 @@ static int run_command(worker_t *w, char *line)
 
     if (n == 1 && !strcmp(v[0], "help")) {
         show_help();
+        return 0;
+    }
+    if (n && !strcmp(v[0], "ls")) {
+        if (n == 1) list_event_files(w);
+        else say(UI_ERR, "ls는 인자 없이 사용하세요.");
         return 0;
     }
     if (n == 2 && !strcmp(v[0], "manual")) {
@@ -964,27 +1056,17 @@ static int run_command(worker_t *w, char *line)
     } else if (n == 2 && !strcmp(v[0], "go") && !strcmp(v[1], "generator")) {
         w->location = FAC_GENERATOR;
         say(UI_OUT, "발전실로 이동했습니다.");
-    } else if (w->location == FAC_GENERATOR && n == 2 && !strcmp(v[0], "stat") &&
-               !strcmp(v[1], "temperature_sensor_link")) {
-        show_sensor_link(GEN_LINK);
-    } else if (w->location == FAC_GENERATOR && n == 2 && !strcmp(v[0], "stat") &&
-               !strcmp(v[1], "generator_config.cfg")) {
-        struct stat st;
-        if (stat(GEN_CFG, &st) < 0)
-            fail(GEN_CFG);
-        else
-            say(UI_OUT, "generator_config.cfg mode=%04o", (unsigned)(st.st_mode & 07777));
-    } else if (n == 2 && !strcmp(v[0], "cat")) {
-        if (strstr(v[1], ".cfg"))
-            say(UI_OUT, "설정 파일 내용은 직원 콘솔에서 열람할 수 없습니다.");
-        else
-            cat_file(w->location, v[1]);
-    } else if (n == 2 && !strcmp(v[0], "stat") &&
-               !strcmp(v[1], "cooling_sensor_link")) {
-        if (w->location == FAC_COOLING)
-            show_sensor_link(SENSOR_LINK);
-        else
-            say(UI_OUT, "먼저 go cooling을 입력하세요.");
+    } else if (n == 2 && (!strcmp(v[0], "cat") || !strcmp(v[0], "stat"))) {
+        inspect_file(w->location, v[0], v[1]);
+    } else if (n == 1 && !strcmp(v[0], "ps")) {
+        int fac = w->location;
+        if (fac < 0 || fac >= FAC_COUNT || !w->mgr.fac[fac].has_last)
+            say(UI_OUT, "시설로 이동한 뒤 상태 보고를 기다리세요.");
+        else {
+            const fac_msg_t *m = &w->mgr.fac[fac].last;
+            say(UI_OUT, "%s pid=%d state=%s", equip_name(fac), (int)m->equip_pid,
+                equip_state_key(m->equip_state));
+        }
     } else if (n == 2 && !strcmp(v[1], "pump") &&
                (!strcmp(v[0], "resume") ||
                 !strcmp(v[0], "restart"))) {
@@ -1007,6 +1089,7 @@ static int run_command(worker_t *w, char *line)
                (!strcmp(v[0], "resume") || !strcmp(v[0], "restart"))) {
         const fac_handle_t *gen = &w->mgr.fac[FAC_GENERATOR];
         int restart = !strcmp(v[0], "restart");
+        struct stat config;
         if (w->location != FAC_GENERATOR || (w->active != EV_G02 && w->active != EV_G03))
             say(UI_OUT, "발전실에서 G02 또는 G03 진행 중에 조작하세요.");
         else if (w->pending || w->turbine_wait)
@@ -1014,6 +1097,10 @@ static int run_command(worker_t *w, char *line)
         else if (!gen->has_last || gen->last.event != w->active ||
                  gen->last.equip_state != (restart ? EQ_DEAD : EQ_STOPPED))
             say(UI_OUT, "현재 터빈 상태로 조작할 수 없습니다.");
+        else if (w->active == EV_G03 &&
+                 (lstat(GEN_CFG, &config) < 0 || !S_ISREG(config.st_mode) ||
+                  (config.st_mode & 07777) != 0640))
+            say(UI_ERR, "설정 파일 권한을 확인한 뒤 재시작하세요.");
         else if ((restart ? fac_mgr_equip_restart(&w->mgr, FAC_GENERATOR)
                           : fac_mgr_equip_signal(&w->mgr, FAC_GENERATOR, SIGCONT)) < 0)
             fail("터빈 조작");
@@ -1021,6 +1108,13 @@ static int run_command(worker_t *w, char *line)
             w->turbine_wait = 1;
             say(UI_OUT, "터빈의 RUNNING 보고를 기다립니다.");
         }
+    } else if (n == 2 && !strcmp(v[0], "rm")) {
+        sensor_command(w, v[1], NULL);
+    } else if (n == 3 && !strcmp(v[0], "ln")) {
+        sensor_command(w, v[2], v[1]);
+    } else if (n == 3 && !strcmp(v[0], "chmod")) {
+        if (!strcmp(v[2], "generator_config.cfg")) change_mode(w, v[1]);
+        else say(UI_ERR, "지정한 파일의 권한은 변경할 수 없습니다.");
     } else if (n && !strcmp(v[0], "repair")) {
         repair(w, v, n);
     } else if (n == 2 && !strcmp(v[1], "breaker") &&
@@ -1077,6 +1171,8 @@ static int prepare_session(char *session)
     pid_t child = fork();
     if (child < 0) return -1;
     if (child == 0) {
+        /* The parent reports setup errors without exposing copied file names. */
+        if (!freopen("/dev/null", "w", stderr)) _exit(127);
         execlp("cp", "cp", "-RP", "--no-preserve=mode,ownership", "--", ROOT, session,
                (char *)NULL);
         _exit(127);
@@ -1114,9 +1210,9 @@ static void push_view(const worker_t *w)
         v.game_state = events[w->step] == EV_NONE ? GS_GAME_CLEAR : GS_NORMAL;
     }
     if (w->location >= 0)
-        snprintf(v.prompt, sizeof v.prompt, ROOT "/%s", facility_key(w->location));
+        snprintf(v.prompt, sizeof v.prompt, "%s 직원", facility_name(w->location));
     else
-        snprintf(v.prompt, sizeof v.prompt, ROOT);
+        snprintf(v.prompt, sizeof v.prompt, "발전소 직원");
 
     for (int i = 0; events[i] != EV_NONE; i++) {
         int fac = event_facility(events[i]);

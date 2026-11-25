@@ -1,3 +1,4 @@
 # generator_label.txt
 model=GT-480
 serial=GN-2291-K
+archive_access_code=4829
