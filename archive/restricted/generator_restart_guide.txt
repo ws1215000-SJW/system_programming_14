@@ -6,15 +6,34 @@ Authorization: GRANTED
 Equipment: GT-480
 Serial: GN-2291-K
 
+[BACKGROUND]
+2026-11-18  Emergency trip. The trip interlock locked
+            generator_config.cfg (mode 0000) and the
+            turbine controller was terminated.
+The generator may only return after both supporting
+rooms are fully restored.
+
 [FINAL RECOVERY PROCEDURE]
 
 1. Confirm Cooling Room recovery: 100%.
 2. Confirm Power Room recovery: 100%.
 3. Check generator_config.cfg.
+   Field: stat generator_config.cfg
 4. Restore file permission to 0640.
+   Field: chmod 0640 generator_config.cfg
+   Field: stat generator_config.cfg   (must show mode=0640)
 5. Restart the generator controller.
+   Field: restart turbine
 6. Verify generator process status.
+   Field: ps   (state=RUNNING)
 7. Confirm final recovery.
+   Output returns to about 480. The field console checks
+   all three rooms before it reports completion.
+
+[ORDER]
+Step 4 must come before step 5. The restart is refused
+until the file shows exactly the required mode.
+The terminated controller cannot be resumed, only restarted.
 
 [WARNING]
 Do not restart the generator before

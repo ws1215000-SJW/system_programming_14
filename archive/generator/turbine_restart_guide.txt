@@ -3,8 +3,17 @@
 Equipment: Turbine Controller
 Location: Generator Room
 
+[ERROR G02]
+Turbine control process stopped.
+Control sees output and turbine speed at 0 while steam
+pressure and generator temperature rise.
+
 [STEP 1]
 Check the turbine process state.
+Field: ps
+  state=RUNNING   normal
+  state=STOPPED   suspended, process still exists
+  state=DEAD      TERMINATED, process is gone
 
 [STEP 2]
 If the process is STOPPED:
@@ -20,3 +29,15 @@ Check the process state again.
 [CAUTION]
 A stopped process and a terminated process
 require different recovery methods.
+The wrong command is refused and the time is lost.
+
+[PAST CASES]
+2026-08-19  TERMINATED (out of memory).
+            "resume turbine" refused. "restart turbine" worked.
+2026-10-13  STOPPED during a watchdog test.
+            "resume turbine" worked.
+
+[IF RESTART FAILS]
+The controller reads generator_config.cfg when it starts.
+While that file is locked the restart is refused.
+That is error G03: see generator_config_manual.txt.

@@ -4,6 +4,7 @@ Equipment: Power Distribution Controller
 
 [ERROR P03]
 Power distribution imbalance.
+Control sees frequency and load balance drop.
 
 [REQUIRED CONFIGURATION]
 
@@ -12,6 +13,13 @@ supply_cooling=60
 
 Total Supply: 100
 
+[SPLIT HISTORY]
+2023-11-06  generator 75, cooling 25   for PUMP-A (CP-50)
+2025-07-02  generator 40, cooling 60   for PUMP-B (CP-70)
+2026-03-30  generator 60, cooling 40   entry error, reversed.
+            Generator branch went over its limit.
+2026-03-30  generator 40, cooling 60   corrected
+
 Commissioning limits (kW)
 Bus nominal: 5200. Minimum: 4700 (low supply warning).
 Maximum: 5460 (5% above nominal).
@@ -19,8 +27,15 @@ GN-2291-K branch, 40%: 1880 to 2184 kW.
 PUMP-B branch, 60%: 2820 to 3276 kW.
 Check measured branch deliveries after the split has settled.
 
+[FIELD CHECK]
+status    in the Power Room: supply power and the kW
+          delivered to GN-2291-K and to PUMP-B
+
 [RECOVERY]
 1. Check the current power distribution.
 2. Set generator supply to 40.
 3. Set cooling supply to 60.
+   Field: repair power_split <generator> <cooling>
 4. Verify the total supply equals 100.
+   The branch deliveries need a few seconds to settle.
+   The field console waits for them by itself.

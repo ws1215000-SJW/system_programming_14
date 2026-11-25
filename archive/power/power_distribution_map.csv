@@ -1,3 +1,23 @@
-circuit_id,location,max_load
-CR-A1,power,80
-CR-B4,power,80
+# Power circuit map. Loads use the unit of load_status.txt.
+circuit_id,field_key,location,installed,max_load
+CR-A1,circuit_a,power,2023-11-06,80
+CR-B4,circuit_b,power,2025-04-21,80
+#
+# Load history, oldest row first.
+date,cr_a1_load,cr_b4_load,note
+2025-05-30,118,12,overload trip on CR-A1
+2025-09-15,65,65,load transfer complete
+2026-07-21,60,60,entry error: 10 units left unsupplied
+2026-07-21,65,65,corrected
+#
+# Rules:
+# 1. No circuit may carry more than its max_load.
+# 2. Load is only moved between the two circuits. The sum
+#    of both must stay equal to the sum in load_status.txt.
+#
+# Field check:  cat load_status.txt      (present loads)
+#               cat circuit_status.txt   (overload / normal)
+#               cat circuit_label.txt    (field_key -> ID)
+# Field repair: repair circuit_load <CR-A1 load> <CR-B4 load>
+# An overload here also weakens the cooling room; that
+# clears by itself once the loads are legal again.

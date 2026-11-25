@@ -1,33 +1,137 @@
 === MAINTENANCE HISTORY ===
+Site log for all rooms, oldest entry first.
+For one item, the latest entry is the valid one.
+Detail and procedures are in each room's folder.
 
-[2024-03-12]
-Equipment: PUMP-A
-Model: CP-50
-Action: Cooling flow adjustment
-Target Flow: 50
-Status: RETIRED
+[2023-11-06] site
+  Plant commissioned. GN-2291-K (GT-480), CR-A1, BK-7.
+  generator_config.cfg mode 0644.
+  Supply split: generator 75, cooling 25.
 
-[2025-06-18]
-Equipment: PUMP-B
-Model: CP-70
-Action: Pump replacement
-Target Flow: 70
-Status: ACTIVE
+[2024-03-12] cooling / PUMP-A
+  Cooling pump PUMP-A (CP-50) commissioned. Target flow 50.
 
-[2025-08-04]
-Equipment: BK-7
-Action: Breaker inspection
-Fault Isolation Required: YES
-Status: ACTIVE
+[2024-04-02] generator / TS-A
+  Temperature sensor TS-A installed: temp_sensor_a.dat
 
-[2026-02-10]
-Equipment: GN-2291-K
-Action: Generator controller update
-Config Mode: 0640
-Status: ACTIVE
+[2024-05-10] cooling / CS-A
+  Cooling sensor CS-A installed: cooling_sensor_a.dat
 
-[2026-03-02]
-Equipment: GT-480 temperature sensor
-Action: Replace TS-A (retired) with TS-B
-Current sensor: TS-B
-Status: ACTIVE
+[2025-04-21] power / CR-B4
+  Second circuit CR-B4 installed to relieve CR-A1.
+
+[2025-05-30] power / CR-A1
+  Overload trip. CR-A1 load 118, CR-B4 load 12.
+  Limit is 80 per circuit. Full load transfer ordered.
+
+[2025-06-18] cooling / PUMP-A, PUMP-B
+  PUMP-A removed (bearing wear). PUMP-B (CP-70) installed.
+  Run-in period: target flow held at 40.
+
+[2025-06-20] common / control computer
+  Weekly configuration backup completed. Set W25.
+
+[2025-06-25] cooling / PUMP-B
+  Run-in finished. Target flow raised to 70.
+
+[2025-06-27] common / control computer
+  Weekly backup FAILED (media error). Ticket opened.
+  No later set has passed verification.
+
+[2025-07-02] power / distribution controller
+  Supply split changed for CP-70: generator 40, cooling 60.
+
+[2025-08-04] power / BK-7
+  Breaker inspection. Rule added: isolate the faulted
+  circuit before the breaker control is brought back.
+
+[2025-09-15] power / CR-A1, CR-B4
+  Load transfer done. CR-A1 65, CR-B4 65. Total still 130.
+
+[2025-11-03] cooling -> generator
+  Generator temperature alarm. Generator inspected first:
+  no defect. Cause was low coolant flow. Flow restored,
+  alarm cleared without touching the generator.
+
+[2026-01-14] cooling / PUMP-B
+  Pump process found STOPPED (suspended by watchdog).
+  "restart pump" was refused. "resume pump" recovered it.
+
+[2026-02-10] generator / GN-2291-K
+  Controller update after security audit.
+  generator_config.cfg mode changed from 0644 to 0640.
+  Trip interlock added: an emergency trip locks the file
+  (mode 0000) until an authorized restart.
+
+[2026-02-24] generator / GN-2291-K
+  Interlock test. Operator unlocked the file with 0644 from
+  an old note. The restart was refused. Redone with 0640.
+
+[2026-02-27] generator / TS-A
+  Reading fell to 0.0 and stayed there. Sensor fault.
+
+[2026-03-02] generator / TS-A, TS-B
+  TS-A retired. TS-B installed: temp_sensor_b.dat
+
+[2026-03-18] cooling / CS-A, CS-B
+  CS-B installed: cooling_sensor_b.dat
+  CS-A unlinked, powered off, kept as cold spare.
+
+[2026-03-30] power / distribution controller
+  Split entered reversed (generator 60, cooling 40).
+  Generator branch over its limit. Corrected the same hour.
+
+[2026-04-07] cooling / PUMP-B
+  Trial: target flow 80 for summer peak load.
+
+[2026-04-09] cooling / PUMP-B
+  Trial withdrawn (pipe vibration). Target flow back to 70.
+
+[2026-05-22] power / CR-A1, BK-7
+  Insulation fault on CR-A1. BK-7 control stopped.
+  Breaker resumed without isolation: tripped again at once.
+  Held after CR-A1 was isolated. Cable repair is temporary;
+  replacement planned 2026-12.
+
+[2026-06-03] cooling / CS-B
+  CS-B removed for calibration. CS-A powered on and linked.
+
+[2026-06-05] cooling / CS-B
+  CS-B back in service. CS-A powered off again.
+  Link was left on CS-A for an hour: control read a constant
+  18.4. Link moved back to CS-B.
+
+[2026-07-02] cooling / PUMP-B
+  Pump process TERMINATED after a power dip.
+  "resume pump" was refused. "restart pump" recovered it.
+
+[2026-07-21] power / CR-A1, CR-B4
+  Loads entered as 60 / 60 after a test. 10 units of load
+  were left without supply. Corrected to 65 / 65.
+
+[2026-08-19] generator / turbine controller
+  Turbine process TERMINATED (out of memory).
+  "resume turbine" was refused. "restart turbine" recovered it.
+
+[2026-09-08] generator / sensor link
+  After a controller reboot the link pointed to
+  temp_sensor_a.dat (old default). Control lost the reading.
+  Link moved to temp_sensor_b.dat. Boot default corrected.
+
+[2026-10-13] generator / turbine controller
+  Turbine process STOPPED during a watchdog test.
+  "resume turbine" recovered it.
+
+[2026-11-18] site
+  Storm, grid disturbance. GN-2291-K emergency trip.
+  Trip interlock active. Cooling and power rooms degraded.
+
+[2026-11-19] common / control computer
+  Storage failure. Configuration restored from backup
+  set W25, the newest set that passes verification.
+
+[2026-11-20] engineering note
+  The restored configuration is old. A system coming back
+  online may load values from the backup date instead of
+  the current ones: setpoints, sensor links, loads, split.
+  Check every field value against these records.

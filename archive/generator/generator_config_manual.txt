@@ -10,6 +10,27 @@ Required Mode: 0640
 Required Operation: AUTO
 Target Output: 480
 
+[FILE MODE HISTORY]
+2023-11-06  0644  commissioning default
+2026-02-10  0640  security audit, replaces 0644
+2026-02-10  0000  trip interlock added. Not an operating
+                  mode: an emergency trip sets it and the
+                  file stays locked until it is restored.
+
+[ERROR G03]
+The turbine controller reads this file when it starts.
+While the file is locked the controller cannot start,
+so the generator stays down.
+
+[PAST CASE]
+2026-02-24  Interlock test. The file was unlocked with 0644
+            from an old note. The restart was refused: only
+            the audited mode is accepted. Redone with 0640.
+
+[FIELD CHECK]
+stat generator_config.cfg    current file mode
+cat generator_label.txt      nameplate: model, serial, code
+
 [RECOVERY]
 1. Check the configuration file permission.
 2. Restore permission to 0640.
@@ -18,4 +39,9 @@ Target Output: 480
 
 [NOTICE]
 Final restart instructions are stored
-in the restricted archive.
+in the restricted archive:
+  restricted/generator_restart_guide.txt
+It holds the exact field commands and is locked.
+The 4-digit code is on the generator nameplate.
+Ask the field operator for it, then enter:
+  unlock generator_restart_guide.txt <code>
