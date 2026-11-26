@@ -15,11 +15,11 @@ If the process is STOPPED:
 Use "resume pump".
 
 [STEP 3]
-If the process is TERMINATED:
+If the process is DEAD:
 Use "restart pump".
 
 [STEP 4]
 Check whether the pump is running.
 
 [WARNING]
-Do not confuse STOPPED with TERMINATED.
+Use resume for STOPPED and restart for DEAD.
