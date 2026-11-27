@@ -1,3 +1,15 @@
-sensor_id,status,target_path
-TS-A,RETIRED,temp_sensor_a.dat
-TS-B,ACTIVE,temp_sensor_b.dat
+# Generator temperature sensor map, oldest row first.
+# The row with an empty removed date is the sensor in service.
+sensor_id,installed,removed,target_path,note
+TS-A,2024-04-02,2026-03-02,temp_sensor_a.dat,stuck at 0.0
+TS-B,2026-03-02,,temp_sensor_b.dat,replaces TS-A
+#
+# Link faults on record:
+# 2026-09-08 link pointed to temp_sensor_a.dat after a reboot
+#            (old default). Control showed "--". Relinked.
+#
+# Field check:  stat temperature_sensor_link   (linked sensor ID)
+#               cat temp_sensor_a.dat          (sensor_id, age)
+#               cat temp_sensor_b.dat
+# Field repair: rm temperature_sensor_link
+#               ln <target_path> temperature_sensor_link

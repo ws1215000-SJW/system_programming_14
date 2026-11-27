@@ -1,29 +1,62 @@
 === POWER PLANT ERROR CODE INDEX ===
 
+File paths start at the archive root.
+"Control" is what the control room sees.
+"Field" is what the plant operator can check on site,
+standing in that room (go generator / cooling / power).
+There "ls" lists the files worth checking for the event.
+Background for all rooms: common/maintenance_history.log
+
 [G01] Temperature Sensor Link Error
+Control: generator temperature shows "--" (no reading)
+Field: stat temperature_sensor_link
 File: generator/sensor_link_map.csv
 
 [G02] Turbine Process Stopped
+Control: output and turbine speed fall to 0
+Field: ps
 File: generator/turbine_restart_guide.txt
 
 [G03] Generator Restart Failure
+Control: generator stays down after the other rooms recover
+Field: stat generator_config.cfg, cat generator_label.txt
 File: generator/generator_config_manual.txt
-File: restricted/generator_restart_guide.txt
+File: restricted/generator_restart_guide.txt (locked)
 
 [C01] Coolant Flow Low
+Control: coolant flow and cooling efficiency drop
+Side effect: generator temperature rises
+Field: cat pump_label.txt
 File: cooling/coolant_flow_spec.csv
 
 [C02] Cooling Pump Process Stopped
+Control: coolant flow falls to 0, coolant temperature climbs
+Field: ps
 File: cooling/pump_process_manual.txt
 
 [C03] Cooling Sensor Path Error
+Control: coolant temperature frozen at one low value
+Field: stat cooling_sensor_link
 File: cooling/cooling_sensor_history.log
 
 [P01] Circuit Overload
+Control: bus voltage and load balance drop
+Side effect: cooling room values get worse
+Field: cat load_status.txt, cat circuit_status.txt
 File: power/power_distribution_map.csv
 
 [P02] Breaker Process Stopped
+Control: supply power collapses
+Field: cat circuit_status.txt, ps
 File: power/breaker_reset_manual.txt
 
 [P03] Power Distribution Imbalance
+Control: frequency and load balance drop
+Field: status (shows power delivered to each branch)
 File: power/load_balance_manual.txt
+
+[NOTE]
+A side effect in another room clears by itself once the
+cause is repaired. Repair the room named by the error code.
+After a repair the field console checks the next measurement.
+While it reports a recovery check, wait. Do not re-enter.

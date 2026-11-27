@@ -1,23 +1,44 @@
 === COOLING SENSOR REPLACEMENT HISTORY ===
+Oldest record first. The last record decides the live sensor.
 
-[OLD RECORD]
-Date: 2024-05-10
+[2024-05-10] INSTALL
 Sensor ID: CS-A
 Target: cooling_sensor_a.dat
-Status: RETIRED
 
-[CURRENT RECORD]
-Date: 2026-03-18
-Sensor ID: CS-B
+[2026-03-18] REPLACE
+Sensor ID: CS-B (replaces CS-A)
 Target: cooling_sensor_b.dat
-Status: ACTIVE
+CS-A unlinked, powered off, kept as cold spare.
+
+[2026-06-03] TEMPORARY
+CS-B removed for calibration.
+CS-A powered on and linked in its place.
+
+[2026-06-05] RESTORE
+CS-B back in service. CS-A powered off again.
+
+[2026-06-05] FAULT
+The link was left on cooling_sensor_a.dat after the swap.
+Control read a constant 18.4 while the real value was
+about 32. Link moved to cooling_sensor_b.dat. Normal.
 
 [IMPORTANT]
-The active sensor data must be updated
-within the last 5 seconds.
+A powered-off sensor keeps its last value and its file
+stops changing. The live sensor file is rewritten every
+second. The active sensor data must be updated within
+the last 5 seconds.
+
+[FIELD CHECK]
+stat cooling_sensor_link     sensor ID the link points to
+cat cooling_sensor_link      its value and data age
+cat cooling_sensor_a.dat     each sensor file on its own
+cat cooling_sensor_b.dat
 
 [RECOVERY]
 1. Check the sensor ID.
 2. Check the current symbolic link.
-3. Replace the incorrect link.
+3. Replace the incorrect link:
+   rm cooling_sensor_link
+   ln <target file> cooling_sensor_link
 4. Verify that the live sensor data is fresh.
+   The field console waits for the next update by itself.

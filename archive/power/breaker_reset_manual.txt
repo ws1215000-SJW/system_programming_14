@@ -5,6 +5,7 @@ Location: Power Room
 
 [ERROR P02]
 Circuit breaker process failure.
+Control sees bus voltage and supply power collapse.
 
 [SAFETY CHECK]
 The fault circuit must be isolated
@@ -12,20 +13,40 @@ before restarting the breaker.
 
 Required Configuration:
 fault_isolated=1
-Identify the fault in circuit_status.txt and look up its ID in circuit_label.txt.
-Command: repair fault_isolated <circuit ID> 1
 
 [STEP 1]
 Check the power configuration.
+Field: cat circuit_status.txt   (which circuit shows fault)
+       cat circuit_label.txt    (its circuit ID)
 
 [STEP 2]
 Set fault_isolated to 1.
+Field: repair fault_isolated <circuit ID> 1
+The circuit then shows "isolated". A wrong ID is refused.
 
 [STEP 3]
 Check the breaker process state.
+Field: ps
+  state=STOPPED   suspended, process still exists
+  state=DEAD      TERMINATED, process is gone
 
 [STEP 4]
 Resume or restart the breaker.
+STOPPED: resume breaker
+DEAD:    restart breaker
+Before step 2 is done both commands are refused.
 
 [STEP 5]
 Verify breaker operation.
+Supply power needs a few seconds to return. Wait for it.
+
+[HISTORY]
+2025-08-04  Inspection. Isolation rule added (see above).
+2026-05-22  Insulation fault on CR-A1, BK-7 control STOPPED.
+            Breaker resumed without isolation: tripped again
+            at once. Held after CR-A1 was isolated.
+            Since then breaker commands are refused until
+            the faulted circuit is isolated.
+            CR-A1 cable repair is temporary (replacement
+            planned 2026-12): a repeat is likely, but confirm
+            the faulted circuit on site every time.

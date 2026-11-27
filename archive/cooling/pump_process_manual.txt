@@ -6,9 +6,15 @@ Location: Cooling Room
 
 [ERROR C02]
 Cooling pump process stopped.
+Control sees coolant flow at 0 and coolant temperature
+climbing.
 
 [STEP 1]
 Check the pump process state.
+Field: ps
+  state=RUNNING   normal
+  state=STOPPED   suspended, process still exists
+  state=DEAD      process has ended
 
 [STEP 2]
 If the process is STOPPED:
@@ -20,6 +26,14 @@ Use "restart pump".
 
 [STEP 4]
 Check whether the pump is running.
+The pid changes after a restart, not after a resume.
 
 [WARNING]
 Use resume for STOPPED and restart for DEAD.
+The wrong command is refused and the time is lost.
+
+[PAST CASES]
+2026-01-14  STOPPED by the watchdog.
+            "restart pump" refused. "resume pump" worked.
+2026-07-02  DEAD after a power dip.
+            "resume pump" refused. "restart pump" worked.
